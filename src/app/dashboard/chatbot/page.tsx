@@ -642,7 +642,7 @@ export default function ChatbotPage() {
             content: m.text,
           }));
 
-        const res = await fetch("/api/chat/gemini", {
+        let res = await fetch("/api/chat/gemini", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -660,6 +660,64 @@ export default function ChatbotPage() {
           }),
           signal: controller.signal,
         });
+
+        // Dual-tier fallback: if SSE streaming request is rejected or fails, attempt standard JSON response
+        if (!res.ok) {
+          console.warn("[Chatbot] SSE streaming rejected (status " + res.status + "), falling back to non-streaming JSON...");
+          res = await fetch("/api/chat/gemini", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              conversationId: targetConvId,
+              message: trimmed,
+              stream: false,
+              isRegenerate,
+              clientHistory: historyPayload,
+              attachmentIds,
+              attachments: attachmentsMeta,
+            }),
+            signal: controller.signal,
+          });
+
+          if (res.ok) {
+            const jsonResult = await res.json();
+            const aiText = jsonResult.assistantMessage?.content || "No response received.";
+            if (jsonResult.conversationId && jsonResult.conversationId !== targetConvId) {
+              const newDbId = jsonResult.conversationId;
+              setConversations((prev) =>
+                prev.map((c) =>
+                  c.id === targetConvId ? { ...c, id: newDbId } : c
+                )
+              );
+              setActiveConvId(newDbId);
+            }
+            setIsTyping(false);
+            setConversations((prev) =>
+              prev.map((c) => {
+                if (c.id === targetConvId || c.id === jsonResult.conversationId) {
+                  return {
+                    ...c,
+                    updatedAt: new Date(),
+                    messages: c.messages.map((m) =>
+                      m.id === streamAssistantId
+                        ? {
+                            ...m,
+                            id: jsonResult.assistantMessage?.id || m.id,
+                            text: aiText,
+                          }
+                        : m
+                    ),
+                  };
+                }
+                return c;
+              })
+            );
+            return;
+          }
+        }
 
         if (!res.ok) {
           let errorText = "";

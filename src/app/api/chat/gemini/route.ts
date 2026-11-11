@@ -12,7 +12,6 @@ import {
   StudentCareerContext,
   isGeminiConfigured,
 } from "@/lib/gemini";
-import { getRelevantAttachmentContext } from "@/lib/services/chat-attachment-service";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -177,6 +176,9 @@ export async function POST(req: NextRequest) {
     let documentContext = "";
     if (validAttachmentIds.length > 0) {
       try {
+        const { getRelevantAttachmentContext } = await import(
+          "@/lib/services/chat-attachment-service"
+        );
         documentContext = await getRelevantAttachmentContext(
           validAttachmentIds,
           trimmedMessage,

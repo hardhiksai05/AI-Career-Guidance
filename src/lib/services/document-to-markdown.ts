@@ -3,14 +3,6 @@ import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
 
-// Dynamically require pdf-parse to avoid Next.js bundling issues
-let pdfParse: any = null;
-try {
-  pdfParse = require("pdf-parse");
-} catch (e) {
-  console.warn("[DocumentToMarkdown] pdf-parse not available via require:", e);
-}
-
 export type SupportedDocumentFormat =
   | "pdf"
   | "docx"
@@ -275,7 +267,7 @@ export function detectDocumentFormat(
 async function extractPdfText(buffer: Buffer): Promise<{ text: string; isScanned: boolean }> {
   let text = "";
   try {
-    const pdfModule = require("pdf-parse");
+    const pdfModule: any = await import("pdf-parse").then((m: any) => m?.default || m).catch(() => null);
     if (typeof pdfModule === "function") {
       const data = await pdfModule(buffer);
       text = data?.text || "";
@@ -291,6 +283,7 @@ async function extractPdfText(buffer: Buffer): Promise<{ text: string; isScanned
       text = data?.text || "";
     }
   } catch (pdfErr: any) {
+    console.warn("[DocumentToMarkdown] PDF parsing fallback:", pdfErr);
     return { text: "", isScanned: true };
   }
 
