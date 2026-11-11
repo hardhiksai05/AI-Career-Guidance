@@ -19,6 +19,19 @@ export const maxDuration = 60;
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+function isGenericDialogueTitle(t?: string | null): boolean {
+  if (!t) return true;
+  const s = t.trim().toLowerCase();
+  return (
+    s === "new career dialogue" ||
+    s === "new career conversation" ||
+    s === "getting started with ai careers" ||
+    s === "new conversation" ||
+    s === "new chat" ||
+    s.startsWith("conv-")
+  );
+}
+
 async function ensureUserProfileExists(supabaseAdmin: any, user: { uid: string; email?: string }) {
   try {
     const { data: existing } = await supabaseAdmin
@@ -70,6 +83,7 @@ export async function POST(req: NextRequest) {
       clientHistory,
       attachmentIds,
       attachments,
+      title: requestedTitle,
     } = body;
 
     if (!rawConversationId || typeof rawConversationId !== "string") {
@@ -110,6 +124,7 @@ export async function POST(req: NextRequest) {
     const supabaseAdmin = hasSupabaseAdmin ? getSupabaseAdminClient() : null;
 
     let resolvedConversationId = rawConversationId;
+    let resolvedTitle: string | null = null;
 
     if (supabaseAdmin) {
       await ensureUserProfileExists(supabaseAdmin, user);
@@ -131,15 +146,37 @@ export async function POST(req: NextRequest) {
             );
           }
           resolvedConversationId = conv.id;
+          resolvedTitle = conv.title;
+
+          // If a requested title was provided and existing title is generic, update it!
+          if (
+            requestedTitle &&
+            typeof requestedTitle === "string" &&
+            requestedTitle.trim() &&
+            isGenericDialogueTitle(conv.title)
+          ) {
+            const cleanTitle = requestedTitle.trim().slice(0, 100);
+            await supabaseAdmin
+              .from("chat_conversations")
+              .update({
+                title: cleanTitle,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", conv.id);
+            resolvedTitle = cleanTitle;
+          }
         } else {
-          // Valid UUID but record doesn't exist yet: upsert it
+          // Valid UUID but record doesn't exist yet: upsert it with requested title if given
+          const newTitle =
+            (requestedTitle && typeof requestedTitle === "string" ? requestedTitle.trim().slice(0, 100) : "") ||
+            "New Career Dialogue";
           const { data: newConv } = await supabaseAdmin
             .from("chat_conversations")
             .upsert(
               {
                 id: rawConversationId,
                 firebase_uid: user.uid,
-                title: "New Career Dialogue",
+                title: newTitle,
                 updated_at: new Date().toISOString(),
               },
               { onConflict: "id" }
@@ -149,22 +186,27 @@ export async function POST(req: NextRequest) {
 
           if (newConv?.id) {
             resolvedConversationId = newConv.id;
+            resolvedTitle = newConv.title;
           }
         }
       } else {
         // Conversation ID is client-generated non-UUID string: auto-create UUID conversation
         const newUuid = crypto.randomUUID();
+        const newTitle =
+          (requestedTitle && typeof requestedTitle === "string" ? requestedTitle.trim().slice(0, 100) : "") ||
+          "New Career Dialogue";
         const { data: newConv } = await supabaseAdmin
           .from("chat_conversations")
           .insert({
             id: newUuid,
             firebase_uid: user.uid,
-            title: "New Career Dialogue",
+            title: newTitle,
           })
           .select()
           .single();
 
         resolvedConversationId = newConv?.id || newUuid;
+        resolvedTitle = newConv?.title || newTitle;
       }
     }
 
@@ -404,6 +446,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         success: true,
         conversationId: resolvedConversationId,
+        title: resolvedTitle,
         userMessage: {
           id: userMsgRecord.id,
           role: userMsgRecord.role,
@@ -433,6 +476,7 @@ export async function POST(req: NextRequest) {
               `event: start\ndata: ${JSON.stringify({
                 userMessageId: userMsgRecord.id,
                 conversationId: resolvedConversationId,
+                title: resolvedTitle,
                 personalized: true,
                 studentMajor: studentContext.branch || studentContext.degree || null,
               })}\n\n`
@@ -544,6 +588,7 @@ export async function POST(req: NextRequest) {
             encoder.encode(
               `event: complete\ndata: ${JSON.stringify({
                 conversationId: resolvedConversationId,
+                title: resolvedTitle,
                 assistantMessage: savedMessage,
               })}\n\n`
             )

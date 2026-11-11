@@ -147,6 +147,52 @@ function renderFileIcon(format: string, className = "w-4 h-4") {
   }
 }
 
+function isGenericTitle(title?: string | null): boolean {
+  if (!title) return true;
+  const t = title.trim().toLowerCase();
+  return (
+    t === "new career dialogue" ||
+    t === "new career conversation" ||
+    t === "getting started with ai careers" ||
+    t === "new conversation" ||
+    t === "new chat" ||
+    t === "career dialogue" ||
+    t.startsWith("conv-")
+  );
+}
+
+function formatConversationTitle(prompt: string): string {
+  if (!prompt || typeof prompt !== "string") return "New Career Dialogue";
+
+  // Clean markdown syntax, code snippets, urls, and brackets
+  let cleaned = prompt
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/https?:\/\/\S+/gi, "")
+    .replace(/[#*_~>\[\]\(\)\{\}\\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!cleaned) return "Career Consultation";
+
+  // Capitalize first character
+  cleaned = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+
+  // Truncate cleanly at word boundary to max ~42 characters
+  const MAX_LEN = 42;
+  if (cleaned.length > MAX_LEN) {
+    const truncated = cleaned.slice(0, MAX_LEN);
+    const lastSpace = truncated.lastIndexOf(" ");
+    if (lastSpace > 18) {
+      cleaned = truncated.slice(0, lastSpace).trim() + "...";
+    } else {
+      cleaned = truncated.trim() + "...";
+    }
+  }
+
+  return cleaned;
+}
+
 export default function ChatbotPage() {
   const searchParams = useSearchParams();
   const initialParam = searchParams.get("query");
@@ -602,6 +648,13 @@ export default function ChatbotPage() {
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     };
 
+    // Determine if the conversation currently has a generic default title that should be renamed to the user's question
+    const currentConv = conversations.find((c) => c.id === targetConvId);
+    const shouldRename = currentConv ? isGenericTitle(currentConv.title) : true;
+    const derivedTitle = shouldRename
+      ? formatConversationTitle(trimmed)
+      : (currentConv?.title || "New Career Dialogue");
+
     // Optimistically update conversation state
     setConversations((prev) =>
       prev.map((c) => {
@@ -609,6 +662,7 @@ export default function ChatbotPage() {
           const baseMessages = customHistory !== undefined ? customHistory : c.messages;
           return {
             ...c,
+            title: shouldRename ? derivedTitle : c.title,
             updatedAt: new Date(),
             messages: [...baseMessages, userMsg, assistantPlaceholder],
           };
@@ -616,6 +670,13 @@ export default function ChatbotPage() {
         return c;
       })
     );
+
+    // Sync title rename to database in the background
+    if (shouldRename && user && isConfigured) {
+      renameConversation(targetConvId, derivedTitle, user.uid).catch((err) =>
+        console.warn("[Chatbot] Auto-rename background sync error:", err)
+      );
+    }
 
     setInputText("");
     if (textareaRef.current) {
@@ -651,6 +712,7 @@ export default function ChatbotPage() {
           },
           body: JSON.stringify({
             conversationId: targetConvId,
+            title: derivedTitle,
             message: trimmed,
             stream: true,
             isRegenerate,
@@ -672,6 +734,7 @@ export default function ChatbotPage() {
             },
             body: JSON.stringify({
               conversationId: targetConvId,
+              title: derivedTitle,
               message: trimmed,
               stream: false,
               isRegenerate,
@@ -694,12 +757,22 @@ export default function ChatbotPage() {
               );
               setActiveConvId(newDbId);
             }
+            if (jsonResult.title) {
+              setConversations((prev) =>
+                prev.map((c) =>
+                  c.id === targetConvId || c.id === jsonResult.conversationId
+                    ? { ...c, title: jsonResult.title }
+                    : c
+                )
+              );
+            }
             setIsTyping(false);
             setConversations((prev) =>
               prev.map((c) => {
                 if (c.id === targetConvId || c.id === jsonResult.conversationId) {
                   return {
                     ...c,
+                    title: jsonResult.title || (shouldRename ? derivedTitle : c.title),
                     updatedAt: new Date(),
                     messages: c.messages.map((m) =>
                       m.id === streamAssistantId
@@ -771,6 +844,15 @@ export default function ChatbotPage() {
                   );
                   setActiveConvId(newDbId);
                 }
+                if (parsed.title) {
+                  setConversations((prev) =>
+                    prev.map((c) =>
+                      c.id === targetConvId || c.id === parsed.conversationId
+                        ? { ...c, title: parsed.title }
+                        : c
+                    )
+                  );
+                }
               } catch (e) {
                 console.warn("[Chatbot Stream] Error parsing start event:", e);
               }
@@ -816,13 +898,23 @@ export default function ChatbotPage() {
                   );
                   setActiveConvId(newDbId);
                 }
+                if (parsed.title) {
+                  setConversations((prev) =>
+                    prev.map((c) =>
+                      c.id === targetConvId || c.id === parsed.conversationId
+                        ? { ...c, title: parsed.title }
+                        : c
+                    )
+                  );
+                }
                 if (parsed.assistantMessage) {
                   const finalRecord = parsed.assistantMessage;
                   setConversations((prev) =>
                     prev.map((c) => {
-                      if (c.id === targetConvId) {
+                      if (c.id === targetConvId || c.id === parsed.conversationId) {
                         return {
                           ...c,
+                          title: parsed.title || c.title,
                           updatedAt: new Date(),
                           messages: c.messages.map((m) =>
                             m.id === streamAssistantId
