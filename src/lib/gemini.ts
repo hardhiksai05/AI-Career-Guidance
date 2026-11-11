@@ -210,9 +210,9 @@ export async function generateCareerAdvice(
     studentContext,
     Boolean(documentContext && documentContext.trim())
   );
-  const primaryModel = "gemini-2.0-flash";
-  const fallbackModel = "gemini-1.5-flash";
-  const tertiaryModel = "gemini-1.5-pro";
+  const primaryModel = "gemini-3.8-flash";
+  const fallbackModel = "gemini-2.5-flash";
+  const tertiaryModel = "gemini-3.1-flash-lite";
 
   try {
     const response = await ai.models.generateContent({
@@ -313,9 +313,9 @@ export async function* streamCareerAdvice(
     studentContext,
     Boolean(documentContext && documentContext.trim())
   );
-  const primaryModel = "gemini-2.0-flash";
-  const fallbackModel = "gemini-1.5-flash";
-  const tertiaryModel = "gemini-1.5-pro";
+  const primaryModel = "gemini-3.8-flash";
+  const fallbackModel = "gemini-2.5-flash";
+  const tertiaryModel = "gemini-3.1-flash-lite";
 
   try {
     const stream = await ai.models.generateContentStream({

@@ -361,7 +361,7 @@ export async function POST(req: NextRequest) {
             p_firebase_uid: user.uid,
             p_content: aiResponseText,
             p_metadata: {
-              model: "gemini-2.0-flash",
+              model: "gemini-3.8-flash",
               turns: history.length + 1,
               personalized: true,
               hasDocuments: Boolean(documentContext),
@@ -381,7 +381,7 @@ export async function POST(req: NextRequest) {
               role: "assistant",
               content: aiResponseText,
               metadata: {
-                model: "gemini-2.0-flash",
+                model: "gemini-3.8-flash",
                 turns: history.length + 1,
               },
             })
@@ -469,7 +469,7 @@ export async function POST(req: NextRequest) {
                 role: "assistant",
                 content: `${fullResponseText}\n\n*[Response stopped by user]*`,
                 metadata: {
-                  model: "gemini-2.0-flash",
+                  model: "gemini-3.8-flash",
                   stoppedByUser: true,
                 },
               });
@@ -492,7 +492,7 @@ export async function POST(req: NextRequest) {
                 p_firebase_uid: user.uid,
                 p_content: fullResponseText,
                 p_metadata: {
-                  model: "gemini-2.0-flash",
+                  model: "gemini-3.8-flash",
                   turns: history.length + 1,
                   streamed: true,
                   personalized: true,
@@ -513,7 +513,7 @@ export async function POST(req: NextRequest) {
                   role: "assistant",
                   content: fullResponseText,
                   metadata: {
-                    model: "gemini-2.0-flash",
+                    model: "gemini-3.8-flash",
                     streamed: true,
                   },
                 })
