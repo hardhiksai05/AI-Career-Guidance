@@ -71,3 +71,4 @@ An enterprise-grade AI-powered career navigation, resume intelligence, and perso
 ## 📄 License
 
 This project is proprietary and confidential.
+

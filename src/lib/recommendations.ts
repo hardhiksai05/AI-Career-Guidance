@@ -1,4 +1,4 @@
-import { getGeminiClient, StudentCareerContext } from "./gemini";
+import { getGeminiClient, isGeminiConfigured, StudentCareerContext } from "./gemini";
 import { CAREER_CATALOG } from "./career-catalog";
 
 export interface CareerRecommendation {
@@ -89,9 +89,15 @@ export function findMatchingRoadmapId(title: string, sector?: string): string {
 export async function generateRecommendationsWithGemini(
   context: StudentCareerContext
 ): Promise<CareerRecommendation[]> {
-  const ai = getGeminiClient();
+  try {
+    if (!isGeminiConfigured()) {
+      console.warn("[Recommendations Engine] Gemini API key not configured, using deterministic profile fallback");
+      return generateDeterministicFallback(context);
+    }
 
-  const studentSummary = `
+    const ai = getGeminiClient();
+
+    const studentSummary = `
 STUDENT PROFILE:
 - Name: ${context.fullName || "Student"}
 - University: ${context.university || "University"}
@@ -107,7 +113,7 @@ STUDENT PROFILE:
 - Bio: ${context.bio || "Student preparing for industry entry"}
 `;
 
-  const prompt = `
+    const prompt = `
 You are the Chief AI Career Strategist for university students. Analyze the following authenticated student profile and generate at least 5 highly personalized career recommendations.
 
 ${studentSummary}
@@ -151,34 +157,12 @@ Respond with a strict JSON array of objects. Do not wrap in markdown quotes if p
 ]
 `;
 
-  const primaryModel = "gemini-3.5-flash";
-  const fallbackModel = "gemini-3.1-flash-lite";
-
-  try {
-    const response = await ai.models.generateContent({
-      model: primaryModel,
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      config: {
-        temperature: 0.4,
-        responseMimeType: "application/json",
-      },
-    });
-
-    const rawJson = response.text?.trim() || "";
-    const parsed = parseRecommendationJson(rawJson);
-    if (parsed && parsed.length >= 5) {
-      return parsed.map((item) => ({
-        ...item,
-        roadmapId: findMatchingRoadmapId(item.title, item.sector),
-      }));
-    }
-    throw new Error("Gemini returned insufficient recommendations count");
-  } catch (err: any) {
-    console.warn(`[Recommendations Engine] Primary model (${primaryModel}) issue:`, err?.message || err);
+    const primaryModel = "gemini-2.5-flash";
+    const fallbackModel = "gemini-2.0-flash";
 
     try {
-      const fallbackResponse = await ai.models.generateContent({
-        model: fallbackModel,
+      const response = await ai.models.generateContent({
+        model: primaryModel,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         config: {
           temperature: 0.4,
@@ -186,19 +170,45 @@ Respond with a strict JSON array of objects. Do not wrap in markdown quotes if p
         },
       });
 
-      const fallbackJson = fallbackResponse.text?.trim() || "";
-      const parsedFallback = parseRecommendationJson(fallbackJson);
-      if (parsedFallback && parsedFallback.length >= 5) {
-        return parsedFallback.map((item) => ({
+      const rawJson = response.text?.trim() || "";
+      const parsed = parseRecommendationJson(rawJson);
+      if (parsed && parsed.length >= 5) {
+        return parsed.map((item) => ({
           ...item,
           roadmapId: findMatchingRoadmapId(item.title, item.sector),
         }));
       }
-    } catch (fallbackErr: any) {
-      console.error(`[Recommendations Engine] Fallback model failed:`, fallbackErr?.message || fallbackErr);
-    }
+      throw new Error("Gemini returned insufficient recommendations count");
+    } catch (err: any) {
+      console.warn(`[Recommendations Engine] Primary model (${primaryModel}) issue:`, err?.message || err);
 
-    // Deterministic fallback based on profile if upstream API is offline
+      try {
+        const fallbackResponse = await ai.models.generateContent({
+          model: fallbackModel,
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          config: {
+            temperature: 0.4,
+            responseMimeType: "application/json",
+          },
+        });
+
+        const fallbackJson = fallbackResponse.text?.trim() || "";
+        const parsedFallback = parseRecommendationJson(fallbackJson);
+        if (parsedFallback && parsedFallback.length >= 5) {
+          return parsedFallback.map((item) => ({
+            ...item,
+            roadmapId: findMatchingRoadmapId(item.title, item.sector),
+          }));
+        }
+      } catch (fallbackErr: any) {
+        console.error(`[Recommendations Engine] Fallback model failed:`, fallbackErr?.message || fallbackErr);
+      }
+
+      // Deterministic fallback based on profile if upstream API is offline
+      return generateDeterministicFallback(context);
+    }
+  } catch (outerErr: any) {
+    console.error("[Recommendations Engine] Global error, safely using deterministic fallback:", outerErr);
     return generateDeterministicFallback(context);
   }
 }

@@ -8,6 +8,7 @@ import { StudentCareerContext } from "@/lib/gemini";
 import { generateRecommendationsWithGemini } from "@/lib/recommendations";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 export async function GET(req: NextRequest) {
   return handleRecommendations(req);
@@ -41,33 +42,51 @@ async function handleRecommendations(req: NextRequest) {
 
     const supabaseAdmin = getSupabaseAdminClient();
 
-    // 2. Fetch authenticated student profile and career preferences
+    // 2. Fetch authenticated student profile and career preferences safely
     const [profileResult, prefsResult, savedTracksResult] = await Promise.all([
-      supabaseAdmin
-        .from("profiles")
-        .select("full_name, email, university, degree, branch, graduation_year, gpa, bio")
-        .eq("firebase_uid", user.uid)
-        .maybeSingle(),
-      supabaseAdmin
-        .from("career_preferences")
-        .select("preferred_domains, career_goals, target_skills, preferred_learning_style, preferred_locations, experience_level")
-        .eq("firebase_uid", user.uid)
-        .maybeSingle(),
-      supabaseAdmin
-        .from("roadmap_progress")
-        .select("career_id, career_title, completed_missions")
-        .eq("firebase_uid", user.uid),
+      Promise.resolve(
+        supabaseAdmin
+          .from("profiles")
+          .select("full_name, email, university, degree, branch, graduation_year, gpa, bio")
+          .eq("firebase_uid", user.uid)
+          .maybeSingle()
+      ).catch((err: any) => {
+        console.warn("[API Recommendations] Profile fetch warning:", err);
+        return { data: null };
+      }),
+      Promise.resolve(
+        supabaseAdmin
+          .from("career_preferences")
+          .select("preferred_domains, career_goals, target_skills, preferred_learning_style, preferred_locations, experience_level")
+          .eq("firebase_uid", user.uid)
+          .maybeSingle()
+      ).catch((err: any) => {
+        console.warn("[API Recommendations] Prefs fetch warning:", err);
+        return { data: null };
+      }),
+      Promise.resolve(
+        supabaseAdmin
+          .from("roadmap_progress")
+          .select("career_id, career_title, completed_missions")
+          .eq("firebase_uid", user.uid)
+      ).catch((err: any) => {
+        console.warn("[API Recommendations] Saved tracks fetch warning:", err);
+        return { data: [] };
+      }),
     ]);
 
-    const studentProfile = profileResult.data;
-    const careerPrefs = prefsResult.data;
-    const savedTracks = savedTracksResult.data || [];
+    const studentProfile = profileResult?.data || null;
+    const careerPrefs = prefsResult?.data || null;
+    const savedTracks = (savedTracksResult as any)?.data || [];
 
-    const savedCareerIds = new Set(
-      savedTracks
-        .filter((t) => t.completed_missions?.includes("saved_recommendation") || t.career_id)
-        .map((t) => t.career_id.toLowerCase())
-    );
+    const savedCareerIds = new Set<string>();
+    if (Array.isArray(savedTracks)) {
+      for (const t of savedTracks) {
+        if (t && typeof t.career_id === "string" && t.career_id.trim()) {
+          savedCareerIds.add(t.career_id.trim().toLowerCase());
+        }
+      }
+    }
 
     const studentContext: StudentCareerContext = {
       fullName: studentProfile?.full_name || null,
@@ -86,17 +105,24 @@ async function handleRecommendations(req: NextRequest) {
       experienceLevel: careerPrefs?.experience_level || null,
     };
 
-    // 3. Generate intelligent recommendations with Gemini AI
+    // 3. Generate intelligent recommendations with Gemini AI (with built-in deterministic fallback)
     const recommendations = await generateRecommendationsWithGemini(studentContext);
 
-    // 4. Mark saved status on recommendations
-    const enriched = recommendations.map((rec) => ({
-      ...rec,
-      saved:
-        savedCareerIds.has(rec.id.toLowerCase()) ||
-        savedCareerIds.has(rec.roadmapId.toLowerCase()) ||
-        savedCareerIds.has(rec.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")),
-    }));
+    // 4. Mark saved status safely without throwing on null or undefined fields
+    const enriched = (recommendations || []).map((rec) => {
+      const recId = rec?.id ? String(rec.id).toLowerCase() : "";
+      const recRoadmapId = rec?.roadmapId ? String(rec.roadmapId).toLowerCase() : "";
+      const recTitleSlug = rec?.title ? String(rec.title).toLowerCase().replace(/[^a-z0-9]+/g, "-") : "";
+
+      return {
+        ...rec,
+        saved: Boolean(
+          (recId && savedCareerIds.has(recId)) ||
+          (recRoadmapId && savedCareerIds.has(recRoadmapId)) ||
+          (recTitleSlug && savedCareerIds.has(recTitleSlug))
+        ),
+      };
+    });
 
     return NextResponse.json({
       success: true,
