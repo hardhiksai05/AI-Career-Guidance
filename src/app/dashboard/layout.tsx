@@ -17,6 +17,15 @@ export default function DashboardLayout({
   const pathname = usePathname();
   const isChatbot = pathname === "/dashboard/chatbot";
 
+  // When navigating away from chatbot, clear active chat session so next visit opens fresh
+  React.useEffect(() => {
+    if (!isChatbot) {
+      try {
+        sessionStorage.removeItem("active_chatbot_conv_id");
+      } catch {}
+    }
+  }, [isChatbot]);
+
   return (
     <ProtectedRoute>
       <div className="min-h-screen bg-[#070913] text-slate-100 flex overflow-hidden">

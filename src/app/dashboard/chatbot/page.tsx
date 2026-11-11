@@ -1,7 +1,7 @@
 /* eslint-disable @next/next/no-img-element */
 "use client";
 
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -246,6 +246,39 @@ export default function ChatbotPage() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const isSendingRef = useRef(false);
 
+  // Helper to create a fresh in-memory conversation draft with welcoming AI mentor message
+  const createFreshConversation = useCallback((): ConversationWithMessages => {
+    const id =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `draft-${Date.now()}`;
+    return {
+      id,
+      title: "New Career Dialogue",
+      updatedAt: new Date(),
+      messages: [
+        {
+          id: `welcome-${Date.now()}`,
+          sender: "ai",
+          text: `Hello ${user?.displayName || "there"}! I am your AI Career Mentor. I can help you evaluate tech career trajectories, explore learning roadmaps, design portfolio projects, or prepare for technical interviews. What would you like to discuss today?`,
+          timestamp: new Date().toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+        },
+      ],
+    };
+  }, [user?.displayName]);
+
+  // Select an existing conversation from history
+  const selectConversation = (id: string) => {
+    setActiveConvId(id);
+    if (typeof window !== "undefined") {
+      sessionStorage.setItem("active_chatbot_conv_id", id);
+    }
+    setMobileSidebarOpen(false);
+  };
+
   // 1. Initial Load: Fetch persistent conversations from Supabase
   useEffect(() => {
     let isMounted = true;
@@ -259,92 +292,59 @@ export default function ChatbotPage() {
       setIsLoadingHistory(true);
 
       try {
+        let convList: ConversationWithMessages[] = [];
         if (isConfigured) {
           const remoteConvs = await getConversations(user.uid);
+          convList = remoteConvs.map((rc) => ({
+            id: rc.id,
+            title: rc.title,
+            updatedAt: new Date(rc.last_message_at),
+            messages: [],
+          }));
+        }
 
-          if (remoteConvs.length === 0) {
-            // Create default starter conversation in Supabase
-            const starter = await createConversation(
-              user.uid,
-              "Getting Started with AI Careers"
-            );
-            const welcomeMsg = await sendChatMessage(
-              starter.id,
-              user.uid,
-              "assistant",
-              `Hello ${user.displayName || "there"}! I am your AI Career Mentor. I can help you evaluate tech career trajectories, explore learning roadmaps, design portfolio projects, or prepare for technical interviews. What would you like to discuss today?`
-            );
+        if (isMounted) {
+          // Check if user refreshed the page with an active conversation
+          const savedActiveId =
+            typeof window !== "undefined"
+              ? sessionStorage.getItem("active_chatbot_conv_id")
+              : null;
+          const canRestore =
+            savedActiveId && convList.some((c) => c.id === savedActiveId);
 
-            if (isMounted) {
-              const starterConv: ConversationWithMessages = {
-                id: starter.id,
-                title: starter.title,
-                updatedAt: new Date(starter.last_message_at),
-                messages: [
-                  {
-                    id: welcomeMsg.id,
-                    sender: "ai",
-                    text: welcomeMsg.content,
-                    timestamp: new Date(welcomeMsg.created_at).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    }),
-                  },
-                ],
-              };
-              setConversations([starterConv]);
-              setActiveConvId(starter.id);
-            }
+          if (canRestore && savedActiveId) {
+            setConversations(convList);
+            setActiveConvId(savedActiveId);
+
+            // Load messages for the restored conversation
+            const msgs = await getConversationMessages(savedActiveId, user.uid);
+            setConversations((prev) =>
+              prev.map((c) => {
+                if (c.id === savedActiveId) {
+                  return {
+                    ...c,
+                    messages: msgs.map((m) => ({
+                      id: m.id,
+                      sender: m.role === "assistant" ? "ai" : "user",
+                      text: m.content,
+                      timestamp: new Date(m.created_at).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      }),
+                      attachments: m.metadata?.attachments || [],
+                    })),
+                  };
+                }
+                return c;
+              })
+            );
           } else {
-            // Convert remote conversations & load messages for the first active one
-            const convList: ConversationWithMessages[] = remoteConvs.map((rc) => ({
-              id: rc.id,
-              title: rc.title,
-              updatedAt: new Date(rc.last_message_at),
-              messages: [],
-            }));
-
-            if (isMounted) {
-              setConversations(convList);
-              const firstId = convList[0].id;
-              setActiveConvId(firstId);
-
-              // Load messages for the first conversation
-              const msgs = await getConversationMessages(firstId, user.uid);
-              const firstUserPrompt = msgs.find(
-                (m) => m.role === "user" || (m as any).sender === "user"
-              )?.content;
-
-              setConversations((prev) =>
-                prev.map((c) => {
-                  if (c.id === firstId) {
-                    const autoTitle =
-                      isGenericTitle(c.title) && firstUserPrompt
-                        ? formatConversationTitle(firstUserPrompt)
-                        : c.title;
-
-                    if (autoTitle !== c.title && user && isConfigured) {
-                      renameConversation(firstId, autoTitle, user.uid).catch(() => {});
-                    }
-
-                    return {
-                      ...c,
-                      title: autoTitle,
-                      messages: msgs.map((m) => ({
-                        id: m.id,
-                        sender: m.role === "assistant" ? "ai" : "user",
-                        text: m.content,
-                        timestamp: new Date(m.created_at).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        }),
-                        attachments: m.metadata?.attachments || [],
-                      })),
-                    };
-                  }
-                  return c;
-                })
-              );
+            // Fresh chat on navigation: zero duplicate DB records
+            const freshConv = createFreshConversation();
+            setConversations([freshConv, ...convList]);
+            setActiveConvId(freshConv.id);
+            if (typeof window !== "undefined") {
+              sessionStorage.setItem("active_chatbot_conv_id", freshConv.id);
             }
           }
         }
@@ -359,7 +359,7 @@ export default function ChatbotPage() {
     return () => {
       isMounted = false;
     };
-  }, [user, isConfigured]);
+  }, [user, isConfigured, createFreshConversation]);
 
   // 2. Load messages whenever active conversation changes (if not yet loaded)
   useEffect(() => {
@@ -570,59 +570,29 @@ export default function ChatbotPage() {
     }
   };
 
-  // Handle New Chat
-  const handleNewChat = async () => {
-    const defaultTitle = "New Career Dialogue";
-
-    if (user && isConfigured) {
-      try {
-        const created = await createConversation(user.uid, defaultTitle);
-        const welcome = await sendChatMessage(
-          created.id,
-          user.uid,
-          "assistant",
-          "Hello! I am your AI Career Mentor. Ask me anything about career trajectories, skill roadmaps, portfolio projects, or technical interview strategies."
-        );
-
-        const newConv: ConversationWithMessages = {
-          id: created.id,
-          title: created.title,
-          updatedAt: new Date(),
-          messages: [
-            {
-              id: welcome.id,
-              sender: "ai",
-              text: welcome.content,
-              timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-            },
-          ],
-        };
-        setConversations([newConv, ...conversations]);
-        setActiveConvId(created.id);
+  // Handle New Chat: creates a fresh in-memory draft without polluting the database with empty records
+  const handleNewChat = () => {
+    // If the active conversation is already an empty conversation (no user messages), keep it without creating duplicates
+    if (activeConversation) {
+      const userMsgs = activeConversation.messages.filter((m) => m.sender === "user");
+      if (userMsgs.length === 0) {
         setSearchQuery("");
         setMobileSidebarOpen(false);
         return;
-      } catch (err) {
-        console.warn("[Chatbot] Create conversation error, falling back locally:", err);
       }
     }
 
-    const newId = `conv-${Date.now()}`;
-    const newConv: ConversationWithMessages = {
-      id: newId,
-      title: defaultTitle,
-      updatedAt: new Date(),
-      messages: [
-        {
-          id: `msg-${Date.now()}`,
-          sender: "ai",
-          text: "Hello! I am your AI Career Mentor. Ask me anything about career trajectories, skill roadmaps, portfolio projects, or technical interview strategies.",
-          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        },
-      ],
-    };
-    setConversations([newConv, ...conversations]);
-    setActiveConvId(newId);
+    const fresh = createFreshConversation();
+    setConversations((prev) => [
+      fresh,
+      ...prev.filter(
+        (c) => c.messages.some((m) => m.sender === "user") || c.id !== fresh.id
+      ),
+    ]);
+    setActiveConvId(fresh.id);
+    if (typeof window !== "undefined") {
+      sessionStorage.setItem("active_chatbot_conv_id", fresh.id);
+    }
     setSearchQuery("");
     setMobileSidebarOpen(false);
   };
@@ -649,6 +619,9 @@ export default function ChatbotPage() {
     const trimmed = textToSend.trim();
     if (!trimmed || !targetConvId || isSendingRef.current || isStreaming) return;
 
+    if (typeof window !== "undefined") {
+      sessionStorage.setItem("active_chatbot_conv_id", targetConvId);
+    }
     isSendingRef.current = true;
 
     const readyAttachments = attachmentsToSend.filter((f) => f.status === "ready");
@@ -875,6 +848,9 @@ export default function ChatbotPage() {
                     )
                   );
                   setActiveConvId(newDbId);
+                  if (typeof window !== "undefined") {
+                    sessionStorage.setItem("active_chatbot_conv_id", newDbId);
+                  }
                 }
                 if (parsed.title && !isGenericTitle(parsed.title)) {
                   setConversations((prev) =>
@@ -929,6 +905,9 @@ export default function ChatbotPage() {
                     )
                   );
                   setActiveConvId(newDbId);
+                  if (typeof window !== "undefined") {
+                    sessionStorage.setItem("active_chatbot_conv_id", newDbId);
+                  }
                 }
                 const finalTitleFromEvent =
                   parsed.title && !isGenericTitle(parsed.title) ? parsed.title : null;
@@ -1354,7 +1333,7 @@ export default function ChatbotPage() {
                           isEditing={editingConvId === conv.id}
                           renameInput={renameInput}
                           setRenameInput={setRenameInput}
-                          onSelect={() => setActiveConvId(conv.id)}
+                          onSelect={() => selectConversation(conv.id)}
                           onStartRename={(e) => startRename(conv, e)}
                           onSaveRename={(e) => saveRename(conv.id, e)}
                           onCancelRename={() => setEditingConvId(null)}
@@ -1380,7 +1359,7 @@ export default function ChatbotPage() {
                           isEditing={editingConvId === conv.id}
                           renameInput={renameInput}
                           setRenameInput={setRenameInput}
-                          onSelect={() => setActiveConvId(conv.id)}
+                          onSelect={() => selectConversation(conv.id)}
                           onStartRename={(e) => startRename(conv, e)}
                           onSaveRename={(e) => saveRename(conv.id, e)}
                           onCancelRename={() => setEditingConvId(null)}
@@ -1406,7 +1385,7 @@ export default function ChatbotPage() {
                           isEditing={editingConvId === conv.id}
                           renameInput={renameInput}
                           setRenameInput={setRenameInput}
-                          onSelect={() => setActiveConvId(conv.id)}
+                          onSelect={() => selectConversation(conv.id)}
                           onStartRename={(e) => startRename(conv, e)}
                           onSaveRename={(e) => saveRename(conv.id, e)}
                           onCancelRename={() => setEditingConvId(null)}
@@ -1432,7 +1411,7 @@ export default function ChatbotPage() {
                           isEditing={editingConvId === conv.id}
                           renameInput={renameInput}
                           setRenameInput={setRenameInput}
-                          onSelect={() => setActiveConvId(conv.id)}
+                          onSelect={() => selectConversation(conv.id)}
                           onStartRename={(e) => startRename(conv, e)}
                           onSaveRename={(e) => saveRename(conv.id, e)}
                           onCancelRename={() => setEditingConvId(null)}
@@ -1482,10 +1461,7 @@ export default function ChatbotPage() {
                 {conversations.map((c) => (
                   <div
                     key={c.id}
-                    onClick={() => {
-                      setActiveConvId(c.id);
-                      setMobileSidebarOpen(false);
-                    }}
+                    onClick={() => selectConversation(c.id)}
                     className={`p-2.5 rounded-xl text-xs cursor-pointer truncate ${
                       c.id === activeConvId
                         ? "bg-purple-950/80 border border-purple-500/40 text-white font-semibold"
@@ -1546,10 +1522,6 @@ export default function ChatbotPage() {
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
-              <Badge variant="purple" size="sm" dot className="hidden md:inline-flex">
-                {isConfigured ? "Supabase Synced" : "Local Preview"}
-              </Badge>
-
               <Button
                 variant="primary"
                 size="sm"

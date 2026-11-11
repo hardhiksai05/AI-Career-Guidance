@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -50,6 +51,7 @@ import {
 } from "lucide-react";
 
 export default function ProfilePage() {
+  const router = useRouter();
   const { showToast } = useToast();
   const { user } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -471,8 +473,67 @@ export default function ProfilePage() {
         type: "success",
         title: "Profile Synchronized with Verified CV",
         description: "Your academic background and skills have been updated in Supabase.",
-        duration: 4500,
+        duration: 3500,
       });
+
+      // Automatically trigger career recommendation reanalysis for the newly confirmed CV
+      showToast({
+        type: "info",
+        isLoading: true,
+        title: "Analysing Your New CV",
+        description: "We are reviewing your skills, education and experience to update your career recommendations.",
+        duration: 5000,
+      });
+
+      try {
+        const recsRes = await fetch("/api/recommendations", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ forceRegenerate: false }),
+        });
+
+        if (recsRes.ok) {
+          const recsData = await recsRes.json();
+          if (recsData.cached) {
+            showToast({
+              type: "info",
+              title: "Your Analysis Is Already Up to Date",
+              description: "This CV has already been analysed. Your existing career recommendations are ready.",
+              action: {
+                label: "View Recommendations",
+                onClick: () => router.push("/dashboard/recommendations"),
+              },
+              duration: 6000,
+            });
+          } else {
+            showToast({
+              type: "success",
+              title: "Career Analysis Updated!",
+              description: "Your new CV has been analysed successfully. Your personalized career recommendations are ready.",
+              action: {
+                label: "View Recommendations",
+                onClick: () => router.push("/dashboard/recommendations"),
+              },
+              duration: 8000,
+            });
+          }
+        }
+      } catch (recErr) {
+        console.warn("[ProfilePage] Automatic recommendation generation notice:", recErr);
+        showToast({
+          type: "error",
+          title: "Analysis Could Not Be Completed",
+          description: "We could not update your recommendations. Your previous successful results are still available.",
+          action: {
+            label: "Retry",
+            onClick: () => router.push("/dashboard/recommendations"),
+          },
+          duration: 6000,
+        });
+      }
     } catch (err: any) {
       showToast({
         type: "error",
@@ -566,9 +627,6 @@ export default function ProfilePage() {
             <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
               Student Profile & CV Intelligence
             </h1>
-            <Badge variant="cyan" size="sm">
-              {isConfigured ? "Supabase Connected" : "Local Preview"}
-            </Badge>
           </div>
           <p className="text-sm text-slate-400">
             Manage your verified academic credentials, resume versions, and extracted skills.
@@ -764,17 +822,6 @@ export default function ProfilePage() {
                   </span>
                 </div>
               )}
-            </div>
-
-            <div className="rounded-2xl bg-[#0b0f22]/90 border border-white/10 p-5 space-y-3">
-              <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
-                <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                <span>Security & Storage Guarantee</span>
-              </div>
-              <p className="text-[11px] text-slate-400 leading-relaxed">
-                Academic records are isolated with PostgreSQL Row Level Security (RLS). Every CV upload
-                is stored with unique timestamped paths in private storage.
-              </p>
             </div>
           </div>
         </div>

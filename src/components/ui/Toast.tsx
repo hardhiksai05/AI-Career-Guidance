@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { CheckCircle2, AlertCircle, Info, AlertTriangle, X, Sparkles } from "lucide-react";
+import { CheckCircle2, AlertCircle, Info, AlertTriangle, X, Sparkles, Loader2, ArrowRight } from "lucide-react";
 
 export type ToastType = "success" | "error" | "info" | "warning";
 
@@ -13,6 +13,11 @@ export interface ToastOptions {
   quote?: string;
   type?: ToastType;
   duration?: number; // ms, default 4000
+  isLoading?: boolean;
+  action?: {
+    label: string;
+    onClick: () => void;
+  };
 }
 
 interface ToastItem extends ToastOptions {
@@ -83,7 +88,9 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                       : "bg-purple-950/80 border-purple-700/50 text-accent-cyan shadow-glow-cyan"
                   }`}
                 >
-                  {toast.type === "error" ? (
+                  {toast.isLoading ? (
+                    <Loader2 className="w-5 h-5 animate-spin text-accent-cyan" />
+                  ) : toast.type === "error" ? (
                     <AlertCircle className="w-5 h-5" />
                   ) : toast.type === "warning" ? (
                     <AlertTriangle className="w-5 h-5" />
@@ -99,6 +106,23 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
                   {toast.description && (
                     <p className="text-xs text-slate-300 mt-1 leading-relaxed">{toast.description}</p>
+                  )}
+
+                  {toast.action && (
+                    <div className="mt-2.5">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toast.action?.onClick();
+                          removeToast(toast.id);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-accent-purple to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-medium text-xs shadow-glow-purple transition-all cursor-pointer"
+                      >
+                        <span>{toast.action.label}</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   )}
 
                   {toast.quote && (
