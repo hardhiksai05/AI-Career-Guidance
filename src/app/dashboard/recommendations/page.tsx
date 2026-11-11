@@ -558,13 +558,13 @@ export default function RecommendationsPage() {
                   </Button>
 
                   <Button
-                    href={`/dashboard/roadmaps?career=${rec.roadmapId || rec.id}`}
+                    href={`/dashboard/roadmaps/${rec.roadmapId || rec.id}`}
                     variant="primary"
                     size="sm"
                     className="justify-center shadow-glow-purple"
                     rightIcon={<ArrowRight className="w-3.5 h-3.5" />}
                   >
-                    Generate Roadmap
+                    View Roadmap
                   </Button>
                 </div>
               </div>
