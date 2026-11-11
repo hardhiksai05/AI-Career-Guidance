@@ -155,8 +155,8 @@ Analyze this structured CV/Resume document and extract candidate details into th
     ];
   }
 
-  const primaryModel = "gemini-3.8-flash";
-  const fallbackModel = "gemini-2.5-flash";
+  const primaryModel = "gemini-3.1-flash-lite";
+  const fallbackModel = "gemini-3.5-flash-lite";
 
   let parsed: ExtractedCvData | null = null;
   let lastError: any = null;
