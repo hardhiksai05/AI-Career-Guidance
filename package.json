@@ -54,6 +54,7 @@
     "@next/swc-win32-x64-msvc": "15.5.29"
   },
   "overrides": {
+    "jose": "^5.9.6",
     "@grpc/grpc-js": "^1.14.7",
     "next": {
       "postcss": "$postcss"

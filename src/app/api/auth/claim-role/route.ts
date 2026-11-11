@@ -1,10 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAuth } from "firebase-admin/auth";
-import {
-  getFirebaseAdminApp,
-  isFirebaseAdminConfigured,
-  provisionUserAuthenticatedRole,
-} from "@/lib/firebase-admin";
 
 export async function POST(req: NextRequest) {
   try {
@@ -23,6 +17,12 @@ export async function POST(req: NextRequest) {
         { status: 401 }
       );
     }
+
+    const {
+      getFirebaseAdminApp,
+      isFirebaseAdminConfigured,
+      provisionUserAuthenticatedRole,
+    } = await import("@/lib/firebase-admin");
 
     // Check if Firebase Admin SDK is configured
     if (!isFirebaseAdminConfigured()) {
@@ -48,6 +48,8 @@ export async function POST(req: NextRequest) {
         { status: 500 }
       );
     }
+
+    const { getAuth } = await import("firebase-admin/auth");
 
     // Verify the caller's Firebase ID token
     const decodedToken = await getAuth(adminApp).verifyIdToken(idToken);
