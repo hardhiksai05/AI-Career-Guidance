@@ -16,6 +16,7 @@ import {
   sendChatMessage,
 } from "@/lib/services/chat-service";
 import { MarkdownRenderer } from "@/components/chatbot/MarkdownRenderer";
+import { AIOrbLoader } from "@/components/ui/AIOrbLoader";
 import {
   BotMessageSquare,
   Send,
@@ -191,6 +192,38 @@ function formatConversationTitle(prompt: string): string {
   }
 
   return cleaned;
+}
+
+const CHATBOT_THINKING_STATUSES = [
+  "Understanding your question...",
+  "Preparing relevant information...",
+  "Generating your response...",
+];
+
+function ChatbotThinkingIndicator() {
+  const [statusIndex, setStatusIndex] = useState(0);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setStatusIndex((prev) => (prev + 1) % CHATBOT_THINKING_STATUSES.length);
+    }, 2400);
+    return () => clearInterval(timer);
+  }, []);
+
+  return (
+    <div className="flex items-center gap-3 py-2 px-3.5 rounded-2xl bg-gradient-to-r from-purple-950/40 via-midnight-card/60 to-cyan-950/30 border border-purple-500/20 backdrop-blur-md w-fit shadow-md shadow-purple-950/20">
+      <AIOrbLoader size="sm" />
+      <div className="flex flex-col">
+        <span className="text-[11px] font-semibold text-purple-200 flex items-center gap-1.5">
+          <span>AI Career Mentor</span>
+          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+        </span>
+        <span className="text-[11px] text-slate-400 transition-all duration-300">
+          {CHATBOT_THINKING_STATUSES[statusIndex]}
+        </span>
+      </div>
+    </div>
+  );
 }
 
 export default function ChatbotPage() {
@@ -1299,9 +1332,9 @@ export default function ChatbotPage() {
           {/* Conversation List Scroll Area */}
           <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-4">
             {isLoadingHistory ? (
-              <div className="text-center py-10 space-y-2">
-                <span className="w-4 h-4 border-2 border-accent-purple border-t-transparent rounded-full animate-spin inline-block" />
-                <p className="text-xs text-slate-500">Loading conversations...</p>
+              <div className="text-center py-12 flex flex-col items-center justify-center gap-3">
+                <AIOrbLoader size="sm" />
+                <p className="text-xs text-slate-400 font-medium">Syncing conversations...</p>
               </div>
             ) : filteredConversations.length === 0 ? (
               <div className="text-center py-10 px-4 space-y-2">
@@ -1788,19 +1821,8 @@ export default function ChatbotPage() {
                   );
                 })}
 
-              {/* Typing Indicator */}
-              {isTyping && (
-                <div className="flex gap-3 items-center">
-                  <div className="w-7 h-7 rounded-lg bg-purple-950/80 border border-purple-500/30 flex items-center justify-center shrink-0 text-accent-purple-light">
-                    <BotMessageSquare className="w-4 h-4" />
-                  </div>
-                  <div className="flex items-center gap-1.5 py-2 px-3 rounded-full bg-white/[0.03] border border-white/5">
-                    <span className="w-2 h-2 rounded-full bg-accent-purple animate-bounce" />
-                    <span className="w-2 h-2 rounded-full bg-accent-cyan animate-bounce [animation-delay:0.2s]" />
-                    <span className="w-2 h-2 rounded-full bg-purple-300 animate-bounce [animation-delay:0.4s]" />
-                  </div>
-                </div>
-              )}
+              {/* Typing / Thinking Indicator */}
+              {isTyping && <ChatbotThinkingIndicator />}
             </div>
           </div>
 

@@ -27,6 +27,7 @@ import {
 } from "@/lib/btech-catalog";
 import { AnimatedRoadmapBackground } from "@/components/roadmaps/AnimatedRoadmapBackground";
 import { CourseCatalogueSearchEngine } from "@/components/roadmaps/CourseCatalogueSearchEngine";
+import { PremiumLoadingScreen } from "@/components/ui/PremiumLoadingScreen";
 
 const ITEMS_PER_PAGE = 12;
 
@@ -457,13 +458,7 @@ function CoursesCatalogueContent() {
 
 export default function CoursesCataloguePage() {
   return (
-    <Suspense
-      fallback={
-        <div className="p-12 text-center text-slate-400 font-mono text-sm">
-          Loading Engineering Courses Catalogue...
-        </div>
-      }
-    >
+    <Suspense fallback={<PremiumLoadingScreen preset="roadmap" />}>
       <CoursesCatalogueContent />
     </Suspense>
   );

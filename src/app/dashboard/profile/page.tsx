@@ -6,6 +6,8 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
+import { AIOrbLoader } from "@/components/ui/AIOrbLoader";
+import { PremiumLoadingScreen } from "@/components/ui/PremiumLoadingScreen";
 import { useAuth } from "@/context/AuthContext";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import {
@@ -727,9 +729,12 @@ export default function ProfilePage() {
             </h3>
 
             {isLoadingProfile ? (
-              <div className="py-12 flex flex-col items-center justify-center gap-3 text-slate-400">
-                <Loader2 className="w-6 h-6 animate-spin text-accent-purple" />
-                <span className="text-xs font-mono">Loading profile records...</span>
+              <div className="py-8">
+                <PremiumLoadingScreen
+                  preset="cv"
+                  heading="Loading Profile Records"
+                  description="Retrieving your academic records, verified skills, and career portfolio..."
+                />
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -853,14 +858,24 @@ export default function ProfilePage() {
 
           {/* Upload & Extraction Progress Indicator */}
           {uploadProgress !== null && (
-            <div className="p-4 rounded-xl bg-purple-950/40 border border-purple-500/30 space-y-2">
-              <div className="flex justify-between text-xs text-purple-200">
-                <span>{extractionStatusText || "Processing document..."}</span>
-                <span>{uploadProgress}%</span>
+            <div className="p-5 rounded-2xl bg-gradient-to-br from-purple-950/40 via-midnight-card/80 to-cyan-950/30 border border-purple-500/30 backdrop-blur-md space-y-4 shadow-lg shadow-purple-950/30">
+              <div className="flex items-center gap-4">
+                <AIOrbLoader size="sm" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-semibold text-purple-200">
+                      {extractionStatusText || "Processing document & extracting intelligence..."}
+                    </span>
+                    <span className="font-mono text-cyan-300 font-bold">{uploadProgress}%</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Turning your CV into structured profile signals and career recommendations
+                  </p>
+                </div>
               </div>
-              <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+              <div className="w-full h-2 bg-slate-900/80 rounded-full overflow-hidden p-0.5 border border-white/5">
                 <div
-                  className="h-full bg-gradient-to-r from-accent-purple to-accent-cyan transition-all duration-300"
+                  className="h-full bg-gradient-to-r from-accent-purple via-indigo-500 to-accent-cyan rounded-full transition-all duration-300 shadow-[0_0_12px_rgba(139,92,246,0.5)]"
                   style={{ width: `${uploadProgress}%` }}
                 />
               </div>

@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
 import { useAuth } from "@/context/AuthContext";
+import { PremiumLoadingScreen } from "@/components/ui/PremiumLoadingScreen";
 import { StudentJobRecommendationView } from "@/lib/services/job-recommendation-service";
 import {
   Briefcase,
@@ -384,12 +385,9 @@ export default function OpportunitiesPage() {
         </div>
       </div>
 
-      {/* 4. Loading Skeleton */}
+      {/* 4. Premium AI Job Discovery Loader */}
       {loading && (
-        <div className="py-20 flex flex-col items-center justify-center gap-3 text-slate-400">
-          <Loader2 className="w-8 h-8 animate-spin text-accent-cyan" />
-          <p className="text-sm font-mono">Fetching and ranking live engineering opportunities...</p>
-        </div>
+        <PremiumLoadingScreen preset="jobs" />
       )}
 
       {/* 5. Error Banner */}

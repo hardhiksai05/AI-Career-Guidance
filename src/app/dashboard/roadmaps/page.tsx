@@ -15,6 +15,7 @@ import { RoadmapSearchEngine } from "@/components/roadmaps/RoadmapSearchEngine";
 import { PersonalizedRecommendationsSection } from "@/components/roadmaps/PersonalizedRecommendationsSection";
 import { ExploreCoursesBanner } from "@/components/roadmaps/ExploreCoursesBanner";
 import { AnimatedRoadmapBackground } from "@/components/roadmaps/AnimatedRoadmapBackground";
+import { PremiumLoadingScreen } from "@/components/ui/PremiumLoadingScreen";
 
 function RoadmapsDashboardContent() {
   const router = useRouter();
@@ -118,13 +119,7 @@ function RoadmapsDashboardContent() {
 
 export default function RoadmapsPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="p-12 text-center text-slate-400 font-mono text-sm">
-          Loading B.Tech Course & Career Roadmaps...
-        </div>
-      }
-    >
+    <Suspense fallback={<PremiumLoadingScreen preset="roadmap" />}>
       <RoadmapsDashboardContent />
     </Suspense>
   );

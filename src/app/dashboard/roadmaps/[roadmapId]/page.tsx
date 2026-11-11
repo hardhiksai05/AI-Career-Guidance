@@ -18,6 +18,7 @@ import {
 } from "@/lib/btech-catalog";
 import { IndividualRoadmapViewer } from "@/components/roadmaps/IndividualRoadmapViewer";
 import { AnimatedRoadmapBackground } from "@/components/roadmaps/AnimatedRoadmapBackground";
+import { PremiumLoadingScreen } from "@/components/ui/PremiumLoadingScreen";
 import { ArrowLeft, ArrowRight, Compass, GraduationCap, ShieldAlert } from "lucide-react";
 
 function RoadmapViewContent() {
@@ -187,13 +188,7 @@ function RoadmapViewContent() {
 
 export default function RoadmapPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="p-12 text-center text-slate-400 font-mono text-sm">
-          Loading Individual Roadmap Workflow...
-        </div>
-      }
-    >
+    <Suspense fallback={<PremiumLoadingScreen preset="roadmap" />}>
       <RoadmapViewContent />
     </Suspense>
   );
