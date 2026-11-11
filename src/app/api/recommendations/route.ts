@@ -29,55 +29,52 @@ async function handleRecommendations(req: NextRequest) {
       );
     }
 
-    if (!isSupabaseAdminConfigured()) {
-      return NextResponse.json(
-        {
-          error: "Service Unavailable",
-          code: "SUPABASE_ADMIN_NOT_CONFIGURED",
-          message: "SUPABASE_SERVICE_ROLE_KEY is not configured on the server.",
-        },
-        { status: 503 }
-      );
+    let studentProfile: any = null;
+    let careerPrefs: any = null;
+    let savedTracks: any[] = [];
+
+    if (isSupabaseAdminConfigured()) {
+      try {
+        const supabaseAdmin = getSupabaseAdminClient();
+        const [profileResult, prefsResult, savedTracksResult] = await Promise.all([
+          Promise.resolve(
+            supabaseAdmin
+              .from("profiles")
+              .select("full_name, email, university, degree, branch, graduation_year, gpa, bio")
+              .eq("firebase_uid", user.uid)
+              .maybeSingle()
+          ).catch((err: any) => {
+            console.warn("[API Recommendations] Profile fetch warning:", err);
+            return { data: null };
+          }),
+          Promise.resolve(
+            supabaseAdmin
+              .from("career_preferences")
+              .select("preferred_domains, career_goals, target_skills, preferred_learning_style, preferred_locations, experience_level")
+              .eq("firebase_uid", user.uid)
+              .maybeSingle()
+          ).catch((err: any) => {
+            console.warn("[API Recommendations] Prefs fetch warning:", err);
+            return { data: null };
+          }),
+          Promise.resolve(
+            supabaseAdmin
+              .from("roadmap_progress")
+              .select("career_id, career_title, completed_missions")
+              .eq("firebase_uid", user.uid)
+          ).catch((err: any) => {
+            console.warn("[API Recommendations] Saved tracks fetch warning:", err);
+            return { data: [] };
+          }),
+        ]);
+
+        studentProfile = profileResult?.data || null;
+        careerPrefs = prefsResult?.data || null;
+        savedTracks = (savedTracksResult as any)?.data || [];
+      } catch (dbErr) {
+        console.warn("[API Recommendations] Supabase fetch non-fatal warning:", dbErr);
+      }
     }
-
-    const supabaseAdmin = getSupabaseAdminClient();
-
-    // 2. Fetch authenticated student profile and career preferences safely
-    const [profileResult, prefsResult, savedTracksResult] = await Promise.all([
-      Promise.resolve(
-        supabaseAdmin
-          .from("profiles")
-          .select("full_name, email, university, degree, branch, graduation_year, gpa, bio")
-          .eq("firebase_uid", user.uid)
-          .maybeSingle()
-      ).catch((err: any) => {
-        console.warn("[API Recommendations] Profile fetch warning:", err);
-        return { data: null };
-      }),
-      Promise.resolve(
-        supabaseAdmin
-          .from("career_preferences")
-          .select("preferred_domains, career_goals, target_skills, preferred_learning_style, preferred_locations, experience_level")
-          .eq("firebase_uid", user.uid)
-          .maybeSingle()
-      ).catch((err: any) => {
-        console.warn("[API Recommendations] Prefs fetch warning:", err);
-        return { data: null };
-      }),
-      Promise.resolve(
-        supabaseAdmin
-          .from("roadmap_progress")
-          .select("career_id, career_title, completed_missions")
-          .eq("firebase_uid", user.uid)
-      ).catch((err: any) => {
-        console.warn("[API Recommendations] Saved tracks fetch warning:", err);
-        return { data: [] };
-      }),
-    ]);
-
-    const studentProfile = profileResult?.data || null;
-    const careerPrefs = prefsResult?.data || null;
-    const savedTracks = (savedTracksResult as any)?.data || [];
 
     const savedCareerIds = new Set<string>();
     if (Array.isArray(savedTracks)) {

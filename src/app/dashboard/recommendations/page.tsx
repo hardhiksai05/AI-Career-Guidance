@@ -27,6 +27,8 @@ import {
   Loader2,
   SlidersHorizontal,
 } from "lucide-react";
+import { getProfile, getCareerPreferences } from "@/lib/services/profile-service";
+import { getClientFallbackRecommendations } from "@/lib/client-recommendations";
 
 export default function RecommendationsPage() {
   const { user } = useAuth();
@@ -66,17 +68,45 @@ export default function RecommendationsPage() {
         },
       });
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.message || errData.error || `HTTP ${res.status}`);
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        if (data && Array.isArray(data.recommendations) && data.recommendations.length > 0) {
+          setRecommendations(data.recommendations);
+          setStudentSummary(data.studentSummary || null);
+          return;
+        }
       }
 
-      const data = await res.json();
-      setRecommendations(data.recommendations || []);
-      setStudentSummary(data.studentSummary || null);
+      // If serverless response is not ok or returns empty, load resilient fallback
+      console.warn("[RecommendationsPage] Upstream API issue, activating resilient matching engine");
+      const [savedProfile, savedPrefs] = await Promise.all([
+        getProfile(user.uid).catch(() => null),
+        getCareerPreferences(user.uid).catch(() => null),
+      ]);
+
+      const fallbackRecs = getClientFallbackRecommendations(savedProfile, savedPrefs);
+      setRecommendations(fallbackRecs);
+      setStudentSummary({
+        name: savedProfile?.full_name || user.displayName || "Student",
+        degree: savedProfile?.degree || "Undergraduate Studies",
+        branch: savedProfile?.branch || "Engineering",
+        university: savedProfile?.university || "University",
+        domains: savedPrefs?.preferred_domains || [],
+        experienceLevel: savedPrefs?.experience_level || "Undergraduate Student",
+      });
     } catch (err: any) {
-      console.error("[RecommendationsPage] Error loading recommendations:", err);
-      setError(err?.message || "Failed to load personalized career recommendations.");
+      console.warn("[RecommendationsPage] Exception caught, falling back to client engine:", err);
+      try {
+        const [savedProfile, savedPrefs] = await Promise.all([
+          getProfile(user.uid).catch(() => null),
+          getCareerPreferences(user.uid).catch(() => null),
+        ]);
+
+        const fallbackRecs = getClientFallbackRecommendations(savedProfile, savedPrefs);
+        setRecommendations(fallbackRecs);
+      } catch (clientErr) {
+        setError("Failed to load personalized career recommendations.");
+      }
     } finally {
       setLoading(false);
       setRegenerating(false);
