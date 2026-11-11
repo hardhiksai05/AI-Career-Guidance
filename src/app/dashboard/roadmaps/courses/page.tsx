@@ -1,12 +1,9 @@
 "use client";
 
-import React, { useState, useMemo, Suspense } from "react";
+import React, { useState, useMemo, Suspense, useEffect } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import {
-  Search,
-  Filter,
-  X,
   GraduationCap,
   Briefcase,
   Compass,
@@ -17,6 +14,7 @@ import {
   ChevronRight,
   BookOpen,
   ArrowLeft,
+  RotateCcw,
 } from "lucide-react";
 import {
   ENGINEERING_BRANCHES,
@@ -28,10 +26,49 @@ import {
   BTechCourse,
 } from "@/lib/btech-catalog";
 import { AnimatedRoadmapBackground } from "@/components/roadmaps/AnimatedRoadmapBackground";
+import { CourseCatalogueSearchEngine } from "@/components/roadmaps/CourseCatalogueSearchEngine";
 
 const ITEMS_PER_PAGE = 12;
 
+// Aliases and domain abbreviations mapping for intelligent discovery
+const ALIAS_MAP: Record<string, string[]> = {
+  cse: ["computer science and engineering", "software engineering", "computer engineering"],
+  cs: ["computer science and engineering", "software engineering"],
+  it: ["information technology", "computer science and engineering"],
+  ai: ["artificial intelligence and machine learning", "artificial intelligence and data science"],
+  ml: ["artificial intelligence and machine learning"],
+  aiml: ["artificial intelligence and machine learning"],
+  "ai&ml": ["artificial intelligence and machine learning"],
+  ds: ["data science", "big data analytics", "artificial intelligence and data science"],
+  aids: ["artificial intelligence and data science"],
+  "ai&ds": ["artificial intelligence and data science"],
+  vlsi: ["vlsi design and technology", "microelectronics", "semiconductor technology"],
+  embedded: ["embedded systems", "iot", "internet of things"],
+  robotics: ["robotics and automation", "robotics engineering", "mechatronics engineering"],
+  ece: ["electronics and communication engineering", "vlsi", "embedded systems", "communication systems"],
+  eee: ["electrical and electronics engineering", "power electronics", "electric vehicle technology"],
+  ee: ["electrical engineering", "power systems engineering", "electrical machines"],
+  iot: ["internet of things"],
+  cyber: ["cyber security", "computer science and information security"],
+  security: ["cyber security", "computer science and information security"],
+  mech: ["mechanical engineering", "automobile engineering", "mechatronics engineering", "production engineering"],
+  cad: ["cad/cam engineering", "automotive design engineering", "mechanical engineering"],
+  cam: ["cad/cam engineering", "manufacturing engineering"],
+  ev: ["electric vehicle technology", "power electronics"],
+  civil: ["civil engineering", "structural engineering", "transportation engineering", "environmental engineering"],
+  chem: ["chemical engineering", "petroleum engineering", "polymer engineering"],
+  bio: ["biotechnology", "biomedical engineering", "bioinformatics", "genetic engineering"],
+  biotech: ["biotechnology", "bioinformatics", "genetic engineering"],
+  aero: ["aerospace engineering", "aeronautical engineering", "avionics engineering"],
+  frontend: ["computer science and engineering", "information technology", "software engineering"],
+  backend: ["computer science and engineering", "information technology", "software engineering"],
+  "ai engineer": ["artificial intelligence and machine learning", "artificial intelligence and data science", "data science"],
+  "data analyst": ["data science", "big data analytics", "computer science and business systems"],
+  "cloud engineer": ["cloud computing", "computer science and engineering", "information technology"],
+};
+
 function CoursesCatalogueContent() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const initialBranch = searchParams.get("branch") || "all";
   const initialSearch = searchParams.get("search") || "";
@@ -42,19 +79,33 @@ function CoursesCatalogueContent() {
   const [selectedFamilyId, setSelectedFamilyId] = useState("all");
   const [selectedDifficulty, setSelectedDifficulty] = useState("all");
   const [selectedDuration, setSelectedDuration] = useState("all");
+  const [selectedCategory, setSelectedCategory] = useState("all");
   const [currentPage, setCurrentPage] = useState(1);
 
   const allRoles = useMemo(() => getAllCareerRoles(), []);
 
-  // Filtered Courses based on all criteria
+  // Update URL query parameters on filter changes without full reload
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (selectedBranchId !== "all") params.set("branch", selectedBranchId);
+    if (searchQuery.trim()) params.set("search", searchQuery.trim());
+    const queryString = params.toString();
+    const targetUrl = queryString ? `/dashboard/roadmaps/courses?${queryString}` : "/dashboard/roadmaps/courses";
+    window.history.replaceState(null, "", targetUrl);
+  }, [selectedBranchId, searchQuery]);
+
+  // Intelligent Filtered Courses based on all combined criteria
   const filteredCourses = useMemo(() => {
+    const raw = searchQuery.trim().toLowerCase();
+    const expandedTerms = raw ? ALIAS_MAP[raw] || [] : [];
+
     return BTECH_COURSES.filter((course) => {
-      // 1. Branch filter
+      // 1. Engineering Branch filter
       if (selectedBranchId !== "all" && course.branchId !== selectedBranchId) {
         return false;
       }
 
-      // 2. Career Family filter (if course leads to roles in this family)
+      // 2. Career Family filter (matches courses whose related careers fall in this family)
       if (selectedFamilyId !== "all") {
         const familyRoles = allRoles.filter((r) => r.familyId === selectedFamilyId);
         const familyRoleIds = new Set(familyRoles.map((r) => r.id));
@@ -62,29 +113,65 @@ function CoursesCatalogueContent() {
         if (!hasMatchingRole) return false;
       }
 
-      // 3. Search query filter
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
-        const matchName = course.name.toLowerCase().includes(q);
-        const matchCode = course.code.toLowerCase().includes(q);
-        const matchDegree = course.degreeName.toLowerCase().includes(q);
-        const matchOverview = course.overview.toLowerCase().includes(q);
-        const matchSubjects = course.coreSubjects.some((s) => s.toLowerCase().includes(q));
-        const matchSkills = course.expectedSkills.some((s) => s.toLowerCase().includes(q));
+      // 3. Difficulty Level filter (matches courses with career tracks at this difficulty)
+      if (selectedDifficulty !== "all") {
+        const hasMatchingDiffRole = course.relatedCareerIds.some((roleId) => {
+          const role = allRoles.find((r) => r.id === roleId);
+          return role?.difficulty === selectedDifficulty;
+        });
+        if (!hasMatchingDiffRole) return false;
+      }
 
-        if (!matchName && !matchCode && !matchDegree && !matchOverview && !matchSubjects && !matchSkills) {
+      // 4. Learning Duration filter
+      if (selectedDuration !== "all") {
+        if (selectedDuration === "24-plus-months") {
+          // B.Tech 4-year degrees match 24+ months
+        } else if (selectedDuration === "18-24-months") {
+          if (!course.recommendedDuration.toLowerCase().includes("year")) return false;
+        }
+      }
+
+      // 5. Search query filter (Intelligent matching: exact, partial, code, alias, subjects, skills, career roles, branch name)
+      if (raw) {
+        const cName = course.name.toLowerCase();
+        const cCode = course.code.toLowerCase();
+        const cDegree = course.degreeName.toLowerCase();
+        const cOverview = course.overview.toLowerCase();
+        const branchObj = getBranchById(course.branchId);
+        const bName = branchObj?.name.toLowerCase() || "";
+
+        const matchDirect =
+          cName.includes(raw) ||
+          cCode.includes(raw) ||
+          cDegree.includes(raw) ||
+          cOverview.includes(raw) ||
+          bName.includes(raw);
+
+        const matchAlias = expandedTerms.some((term) => cName.includes(term) || bName.includes(term));
+
+        const matchSubject = course.coreSubjects.some((s) => s.toLowerCase().includes(raw));
+        const matchSkill = course.expectedSkills.some((s) => s.toLowerCase().includes(raw));
+
+        // Career role keyword match (e.g. user searches "Frontend" or "AI Engineer")
+        const matchCareerRole = course.relatedCareerIds.some((roleId) => {
+          const role = allRoles.find((r) => r.id === roleId);
+          if (!role) return false;
+          return role.title.toLowerCase().includes(raw) || role.tagline.toLowerCase().includes(raw);
+        });
+
+        if (!matchDirect && !matchAlias && !matchSubject && !matchSkill && !matchCareerRole) {
           return false;
         }
       }
 
       return true;
     });
-  }, [selectedBranchId, selectedFamilyId, searchQuery, allRoles]);
+  }, [selectedBranchId, selectedFamilyId, selectedDifficulty, selectedDuration, searchQuery, allRoles]);
 
-  // Reset page when filters change
-  React.useEffect(() => {
+  // Reset page when any filter criteria changes
+  useEffect(() => {
     setCurrentPage(1);
-  }, [selectedBranchId, selectedFamilyId, selectedDifficulty, selectedDuration, searchQuery]);
+  }, [selectedBranchId, selectedFamilyId, selectedDifficulty, selectedDuration, selectedCategory, searchQuery]);
 
   // Pagination calculations
   const totalPages = Math.ceil(filteredCourses.length / ITEMS_PER_PAGE) || 1;
@@ -99,10 +186,10 @@ function CoursesCatalogueContent() {
   }, [selectedBranchId]);
 
   return (
-    <div className="space-y-8 relative">
+    <div className="space-y-8 relative pb-12">
       <AnimatedRoadmapBackground />
 
-      {/* Top Breadcrumb & Back Navigation */}
+      {/* Top Breadcrumb Navigation */}
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-2 text-xs font-mono text-slate-400">
           <Link href="/dashboard/roadmaps" className="hover:text-accent-cyan transition-colors flex items-center gap-1">
@@ -128,7 +215,7 @@ function CoursesCatalogueContent() {
         </Link>
       </div>
 
-      {/* Header Banner */}
+      {/* 1. Page Heading and Description */}
       <div className="relative rounded-3xl p-6 sm:p-8 bg-gradient-to-br from-[#101438] via-[#0c102a] to-[#070918] border border-white/10 shadow-2xl overflow-hidden">
         <div className="space-y-3 max-w-3xl relative z-10">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-accent-purple/10 border border-accent-purple/30 text-accent-purple text-xs font-mono font-bold">
@@ -139,7 +226,7 @@ function CoursesCatalogueContent() {
             Explore All Engineering Courses
           </h1>
           <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-            Discover engineering branches, university specializations and career-oriented learning opportunities. Explore prerequisites, semester subject structures, and direct career mappings.
+            Discover engineering branches, specializations and career-oriented learning opportunities. Explore university prerequisites, semester subject structures, and direct career mappings.
           </p>
           <div className="text-xs font-mono text-slate-400 pt-1">
             Showing <span className="text-white font-bold">{filteredCourses.length}</span> of{" "}
@@ -149,30 +236,29 @@ function CoursesCatalogueContent() {
         </div>
       </div>
 
-      {/* Search & Branch Tabs */}
-      <div className="space-y-4">
-        {/* Search Bar */}
-        <div className="relative">
-          <Search className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by course name, degree code, specialization, branch, or key subject..."
-            className="w-full pl-11 pr-10 py-3 rounded-2xl bg-white/[0.04] border border-white/10 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-accent-purple/60 focus:ring-2 focus:ring-accent-purple/20 transition-all"
-          />
-          {searchQuery && (
-            <button
-              type="button"
-              onClick={() => setSearchQuery("")}
-              className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-white"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          )}
-        </div>
+      {/* 2 & 3. AI-Powered Course Search Engine & Multi-Filter Controls */}
+      <CourseCatalogueSearchEngine
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        selectedBranchId={selectedBranchId}
+        onBranchChange={setSelectedBranchId}
+        selectedFamilyId={selectedFamilyId}
+        onFamilyChange={setSelectedFamilyId}
+        selectedDifficulty={selectedDifficulty}
+        onDifficultyChange={setSelectedDifficulty}
+        selectedDuration={selectedDuration}
+        onDurationChange={setSelectedDuration}
+        selectedCategory={selectedCategory}
+        onCategoryChange={setSelectedCategory}
+        filteredCount={filteredCourses.length}
+        totalCount={BTECH_COURSES.length}
+      />
 
-        {/* Branch Category Pills (All 9 Engineering Branches) */}
+      {/* 4. Engineering Branch Categories (Category Pills) */}
+      <div className="space-y-2">
+        <div className="text-[11px] font-mono text-slate-400 uppercase tracking-wider font-bold">
+          Filter by Engineering Branch
+        </div>
         <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-purple-900/40">
           <button
             type="button"
@@ -206,12 +292,12 @@ function CoursesCatalogueContent() {
         </div>
       </div>
 
-      {/* Courses Cards Grid */}
+      {/* 5. Filtered Course Results */}
       {paginatedCourses.length === 0 ? (
         <div className="p-12 text-center rounded-3xl bg-white/[0.02] border border-white/5 space-y-3">
           <p className="text-base font-semibold text-slate-300">No matching engineering courses found</p>
           <p className="text-xs text-slate-500 max-w-md mx-auto">
-            Try adjusting your search query or selecting a different engineering branch from the category pills above.
+            Try adjusting your search terms or resetting filters using the &quot;Reset Filters&quot; button above.
           </p>
           <button
             type="button"
@@ -219,10 +305,14 @@ function CoursesCatalogueContent() {
               setSearchQuery("");
               setSelectedBranchId("all");
               setSelectedFamilyId("all");
+              setSelectedDifficulty("all");
+              setSelectedDuration("all");
+              setSelectedCategory("all");
             }}
-            className="px-4 py-2 rounded-xl bg-white/10 text-white text-xs font-bold hover:bg-white/20 transition-colors"
+            className="px-4 py-2 rounded-xl bg-white/10 text-white text-xs font-bold hover:bg-white/20 transition-colors inline-flex items-center gap-2"
           >
-            Clear All Filters
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Reset All Filters</span>
           </button>
         </div>
       ) : (
@@ -313,7 +403,7 @@ function CoursesCatalogueContent() {
                   {course.roadmapId && (
                     <Link
                       href={`/dashboard/roadmaps/${course.roadmapId}`}
-                      title="Launch Roadmap"
+                      title="Launch Roadmap Directly"
                       className="p-2.5 rounded-xl bg-white/5 hover:bg-white/15 text-accent-cyan hover:text-white transition-colors border border-white/10"
                     >
                       <Compass className="w-4 h-4" />
@@ -326,12 +416,12 @@ function CoursesCatalogueContent() {
         </div>
       )}
 
-      {/* Pagination Controls */}
+      {/* 6. Pagination Controls */}
       {totalPages > 1 && (
-        <div className="pt-4 flex items-center justify-between border-t border-white/10 text-xs font-mono text-slate-400">
+        <div className="pt-6 flex items-center justify-between border-t border-white/10 text-xs font-mono text-slate-400">
           <div>
             Page <span className="text-white font-bold">{currentPage}</span> of{" "}
-            <span className="text-white font-bold">{totalPages}</span>
+            <span className="text-white font-bold">{totalPages}</span> ({filteredCourses.length} Total Results)
           </div>
 
           <div className="flex items-center gap-2">
@@ -340,6 +430,7 @@ function CoursesCatalogueContent() {
               disabled={currentPage <= 1}
               onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
               className="p-2 rounded-xl bg-white/5 border border-white/10 text-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/10 transition-colors"
+              title="Previous Page"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
@@ -353,6 +444,7 @@ function CoursesCatalogueContent() {
               disabled={currentPage >= totalPages}
               onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
               className="p-2 rounded-xl bg-white/5 border border-white/10 text-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/10 transition-colors"
+              title="Next Page"
             >
               <ChevronRight className="w-4 h-4" />
             </button>

@@ -51,3 +51,4 @@ export const ExploreCoursesBanner: React.FC = () => {
     </div>
   );
 };
+
