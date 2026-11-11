@@ -4,6 +4,11 @@ import {
   getSupabaseAdminClient,
   isSupabaseAdminConfigured,
 } from "@/lib/supabase-server";
+import {
+  getCvContentHash,
+  findSnapshotByCvHash,
+  reactivateSnapshot,
+} from "@/lib/services/recommendation-snapshot-service";
 
 export const dynamic = "force-dynamic";
 
@@ -122,6 +127,20 @@ export async function POST(req: NextRequest) {
         updated_at: new Date().toISOString(),
       })
       .eq("id", resumeId);
+
+    // 5. Check if recommendations already exist for this CV hash and reactivate them
+    try {
+      const cvHash = await getCvContentHash(resume);
+      if (cvHash) {
+        const existingSnapshot = await findSnapshotByCvHash(user.uid, cvHash);
+        if (existingSnapshot) {
+          await reactivateSnapshot(existingSnapshot.id, user.uid);
+          console.log(`[Resume Confirm API] Reactivated existing recommendation snapshot for CV hash ${cvHash.slice(0, 8)}`);
+        }
+      }
+    } catch (recErr) {
+      console.warn("[Resume Confirm API] Snapshot check non-fatal notice:", recErr);
+    }
 
     // 5. Unlock 'resume_verified' achievement via secure RPC if available
     try {
