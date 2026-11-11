@@ -28,8 +28,38 @@ function isGenericDialogueTitle(t?: string | null): boolean {
     s === "getting started with ai careers" ||
     s === "new conversation" ||
     s === "new chat" ||
+    s === "career dialogue" ||
     s.startsWith("conv-")
   );
+}
+
+function formatConversationTitle(prompt: string): string {
+  if (!prompt || typeof prompt !== "string") return "New Career Dialogue";
+
+  let cleaned = prompt
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/https?:\/\/\S+/gi, "")
+    .replace(/[#*_~>\[\]\(\)\{\}\\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!cleaned) return "Career Consultation";
+
+  cleaned = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+
+  const MAX_LEN = 45;
+  if (cleaned.length > MAX_LEN) {
+    const truncated = cleaned.slice(0, MAX_LEN);
+    const lastSpace = truncated.lastIndexOf(" ");
+    if (lastSpace > 18) {
+      cleaned = truncated.slice(0, lastSpace).trim() + "...";
+    } else {
+      cleaned = truncated.trim() + "...";
+    }
+  }
+
+  return cleaned;
 }
 
 async function ensureUserProfileExists(supabaseAdmin: any, user: { uid: string; email?: string }) {
@@ -138,6 +168,14 @@ export async function POST(req: NextRequest) {
           .eq("id", rawConversationId)
           .maybeSingle();
 
+        const derivedTitleFromMsg = formatConversationTitle(trimmedMessage);
+        const finalTitle =
+          requestedTitle &&
+          typeof requestedTitle === "string" &&
+          !isGenericDialogueTitle(requestedTitle)
+            ? requestedTitle.trim().slice(0, 100)
+            : derivedTitleFromMsg;
+
         if (conv) {
           if (conv.firebase_uid !== user.uid) {
             return NextResponse.json(
@@ -148,35 +186,26 @@ export async function POST(req: NextRequest) {
           resolvedConversationId = conv.id;
           resolvedTitle = conv.title;
 
-          // If a requested title was provided and existing title is generic, update it!
-          if (
-            requestedTitle &&
-            typeof requestedTitle === "string" &&
-            requestedTitle.trim() &&
-            isGenericDialogueTitle(conv.title)
-          ) {
-            const cleanTitle = requestedTitle.trim().slice(0, 100);
+          // If current conversation title is generic, update it with what the user asked!
+          if (isGenericDialogueTitle(conv.title)) {
             await supabaseAdmin
               .from("chat_conversations")
               .update({
-                title: cleanTitle,
+                title: finalTitle,
                 updated_at: new Date().toISOString(),
               })
               .eq("id", conv.id);
-            resolvedTitle = cleanTitle;
+            resolvedTitle = finalTitle;
           }
         } else {
-          // Valid UUID but record doesn't exist yet: upsert it with requested title if given
-          const newTitle =
-            (requestedTitle && typeof requestedTitle === "string" ? requestedTitle.trim().slice(0, 100) : "") ||
-            "New Career Dialogue";
+          // Valid UUID but record doesn't exist yet: upsert it with the derived user question title
           const { data: newConv } = await supabaseAdmin
             .from("chat_conversations")
             .upsert(
               {
                 id: rawConversationId,
                 firebase_uid: user.uid,
-                title: newTitle,
+                title: finalTitle,
                 updated_at: new Date().toISOString(),
               },
               { onConflict: "id" }
@@ -191,22 +220,26 @@ export async function POST(req: NextRequest) {
         }
       } else {
         // Conversation ID is client-generated non-UUID string: auto-create UUID conversation
+        const derivedTitleFromMsg = formatConversationTitle(trimmedMessage);
+        const finalTitle =
+          requestedTitle &&
+          typeof requestedTitle === "string" &&
+          !isGenericDialogueTitle(requestedTitle)
+            ? requestedTitle.trim().slice(0, 100)
+            : derivedTitleFromMsg;
         const newUuid = crypto.randomUUID();
-        const newTitle =
-          (requestedTitle && typeof requestedTitle === "string" ? requestedTitle.trim().slice(0, 100) : "") ||
-          "New Career Dialogue";
         const { data: newConv } = await supabaseAdmin
           .from("chat_conversations")
           .insert({
             id: newUuid,
             firebase_uid: user.uid,
-            title: newTitle,
+            title: finalTitle,
           })
           .select()
           .single();
 
         resolvedConversationId = newConv?.id || newUuid;
-        resolvedTitle = newConv?.title || newTitle;
+        resolvedTitle = newConv?.title || finalTitle;
       }
     }
 

@@ -311,24 +311,39 @@ export default function ChatbotPage() {
 
               // Load messages for the first conversation
               const msgs = await getConversationMessages(firstId, user.uid);
+              const firstUserPrompt = msgs.find(
+                (m) => m.role === "user" || (m as any).sender === "user"
+              )?.content;
+
               setConversations((prev) =>
-                prev.map((c) =>
-                  c.id === firstId
-                    ? {
-                        ...c,
-                        messages: msgs.map((m) => ({
-                          id: m.id,
-                          sender: m.role === "assistant" ? "ai" : "user",
-                          text: m.content,
-                          timestamp: new Date(m.created_at).toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          }),
-                          attachments: m.metadata?.attachments || [],
-                        })),
-                      }
-                    : c
-                )
+                prev.map((c) => {
+                  if (c.id === firstId) {
+                    const autoTitle =
+                      isGenericTitle(c.title) && firstUserPrompt
+                        ? formatConversationTitle(firstUserPrompt)
+                        : c.title;
+
+                    if (autoTitle !== c.title && user && isConfigured) {
+                      renameConversation(firstId, autoTitle, user.uid).catch(() => {});
+                    }
+
+                    return {
+                      ...c,
+                      title: autoTitle,
+                      messages: msgs.map((m) => ({
+                        id: m.id,
+                        sender: m.role === "assistant" ? "ai" : "user",
+                        text: m.content,
+                        timestamp: new Date(m.created_at).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        }),
+                        attachments: m.metadata?.attachments || [],
+                      })),
+                    };
+                  }
+                  return c;
+                })
               );
             }
           }
@@ -357,24 +372,39 @@ export default function ChatbotPage() {
       try {
         const msgs = await getConversationMessages(activeConvId, user.uid);
         if (isMounted && msgs.length > 0) {
+          const firstUserMsg = msgs.find(
+            (m) => m.role === "user" || (m as any).sender === "user"
+          )?.content;
+
           setConversations((prev) =>
-            prev.map((c) =>
-              c.id === activeConvId
-                ? {
-                    ...c,
-                    messages: msgs.map((m) => ({
-                      id: m.id,
-                      sender: m.role === "assistant" ? "ai" : "user",
-                      text: m.content,
-                      timestamp: new Date(m.created_at).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      }),
-                      attachments: m.metadata?.attachments || [],
-                    })),
-                  }
-                : c
-            )
+            prev.map((c) => {
+              if (c.id === activeConvId) {
+                const autoTitle =
+                  isGenericTitle(c.title) && firstUserMsg
+                    ? formatConversationTitle(firstUserMsg)
+                    : c.title;
+
+                if (autoTitle !== c.title && user && isConfigured) {
+                  renameConversation(activeConvId, autoTitle, user.uid).catch(() => {});
+                }
+
+                return {
+                  ...c,
+                  title: autoTitle,
+                  messages: msgs.map((m) => ({
+                    id: m.id,
+                    sender: m.role === "assistant" ? "ai" : "user",
+                    text: m.content,
+                    timestamp: new Date(m.created_at).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    }),
+                    attachments: m.metadata?.attachments || [],
+                  })),
+                };
+              }
+              return c;
+            })
           );
         }
       } catch (err) {
@@ -757,11 +787,13 @@ export default function ChatbotPage() {
               );
               setActiveConvId(newDbId);
             }
-            if (jsonResult.title) {
+            const finalJsonTitle =
+              jsonResult.title && !isGenericTitle(jsonResult.title) ? jsonResult.title : null;
+            if (finalJsonTitle) {
               setConversations((prev) =>
                 prev.map((c) =>
                   c.id === targetConvId || c.id === jsonResult.conversationId
-                    ? { ...c, title: jsonResult.title }
+                    ? { ...c, title: finalJsonTitle }
                     : c
                 )
               );
@@ -772,7 +804,7 @@ export default function ChatbotPage() {
                 if (c.id === targetConvId || c.id === jsonResult.conversationId) {
                   return {
                     ...c,
-                    title: jsonResult.title || (shouldRename ? derivedTitle : c.title),
+                    title: finalJsonTitle || (shouldRename ? derivedTitle : c.title),
                     updatedAt: new Date(),
                     messages: c.messages.map((m) =>
                       m.id === streamAssistantId
@@ -844,7 +876,7 @@ export default function ChatbotPage() {
                   );
                   setActiveConvId(newDbId);
                 }
-                if (parsed.title) {
+                if (parsed.title && !isGenericTitle(parsed.title)) {
                   setConversations((prev) =>
                     prev.map((c) =>
                       c.id === targetConvId || c.id === parsed.conversationId
@@ -898,11 +930,13 @@ export default function ChatbotPage() {
                   );
                   setActiveConvId(newDbId);
                 }
-                if (parsed.title) {
+                const finalTitleFromEvent =
+                  parsed.title && !isGenericTitle(parsed.title) ? parsed.title : null;
+                if (finalTitleFromEvent) {
                   setConversations((prev) =>
                     prev.map((c) =>
                       c.id === targetConvId || c.id === parsed.conversationId
-                        ? { ...c, title: parsed.title }
+                        ? { ...c, title: finalTitleFromEvent }
                         : c
                     )
                   );
@@ -914,7 +948,7 @@ export default function ChatbotPage() {
                       if (c.id === targetConvId || c.id === parsed.conversationId) {
                         return {
                           ...c,
-                          title: parsed.title || c.title,
+                          title: finalTitleFromEvent || (shouldRename ? derivedTitle : c.title),
                           updatedAt: new Date(),
                           messages: c.messages.map((m) =>
                             m.id === streamAssistantId

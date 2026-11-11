@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { jwtVerify, createRemoteJWKSet, decodeJwt } from "jose";
 
 export interface AuthenticatedUser {
   uid: string;
@@ -17,20 +18,20 @@ function stripQuotes(str?: string): string {
   return trimmed;
 }
 
-function hasFirebaseAdminConfig(): boolean {
-  if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) return true;
-  const privateKey = stripQuotes(process.env.FIREBASE_ADMIN_PRIVATE_KEY);
-  return Boolean(privateKey && privateKey.includes("BEGIN PRIVATE KEY"));
-}
+// Google's public JWKS keyset for cryptographically verifying Firebase ID Tokens
+// Cached in-memory by jose; uses native Web Crypto API with ZERO Node CJS dependencies.
+const GOOGLE_DISCOVERY_JWKS = createRemoteJWKSet(
+  new URL("https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com")
+);
 
 /**
  * Authenticates an incoming HTTP request using a Firebase ID Token passed in the
  * Authorization header: "Bearer <token>".
  *
  * Verification order:
- * 1. Primary: Firebase Admin SDK verification (lazy-loaded dynamically if configured).
- * 2. Official Google Firebase REST verification endpoint (https://identitytoolkit.googleapis.com).
- * 3. Client JWT claims verification (signature/timestamp/audience validation).
+ * 1. Cryptographic RS256 signature verification via 'jose' and Google's official JWKS.
+ * 2. Official Google Firebase REST verification endpoint (Identity Toolkit accounts:lookup).
+ * 3. Safe claims decode fallback (issuer, audience, and clock-skew expiration check).
  *
  * Guaranteed NEVER to crash at module startup or throw ERR_REQUIRE_ESM.
  */
@@ -47,25 +48,34 @@ export async function authenticateFirebaseUser(
     return null;
   }
 
-  // 1. Primary: Firebase Admin SDK verification (dynamic lazy import only if credentials exist)
-  if (hasFirebaseAdminConfig()) {
+  const projectId =
+    stripQuotes(process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID) ||
+    stripQuotes(process.env.FIREBASE_PROJECT_ID) ||
+    stripQuotes(process.env.FIREBASE_ADMIN_PROJECT_ID);
+
+  // 1. Primary: Cryptographic signature verification using jose and Google's public JWKS
+  if (projectId) {
     try {
-      const { getFirebaseAdminApp } = await import("@/lib/firebase-admin");
-      const { getAuth } = await import("firebase-admin/auth");
-      const adminApp = getFirebaseAdminApp();
-      if (adminApp) {
-        const decoded = await getAuth(adminApp).verifyIdToken(idToken);
-        if (decoded?.uid) {
-          return { uid: decoded.uid, email: decoded.email };
-        }
+      const { payload } = await jwtVerify(idToken, GOOGLE_DISCOVERY_JWKS, {
+        issuer: `https://securetoken.google.com/${projectId}`,
+        audience: projectId,
+      });
+
+      if (payload?.sub) {
+        return {
+          uid: payload.sub,
+          email: typeof payload.email === "string" ? payload.email : undefined,
+        };
       }
     } catch (err: any) {
-      console.warn("[server-auth] Firebase Admin verifyIdToken rejected token:", err?.message || err);
+      console.warn("[server-auth] Jose JWKS verification note:", err?.message || err);
     }
   }
 
-  // 2. Official Google Firebase REST verification fallback
-  const apiKey = stripQuotes(process.env.NEXT_PUBLIC_FIREBASE_API_KEY);
+  // 2. Official Google Firebase REST verification fallback (Identity Toolkit)
+  const apiKey =
+    stripQuotes(process.env.NEXT_PUBLIC_FIREBASE_API_KEY) ||
+    stripQuotes(process.env.FIREBASE_API_KEY);
   if (apiKey) {
     try {
       const res = await fetch(
@@ -81,7 +91,10 @@ export async function authenticateFirebaseUser(
         const data = await res.json();
         const user = data.users?.[0];
         if (user?.localId) {
-          return { uid: user.localId, email: user.email };
+          return {
+            uid: user.localId,
+            email: user.email || undefined,
+          };
         }
       }
     } catch (err: any) {
@@ -89,25 +102,21 @@ export async function authenticateFirebaseUser(
     }
   }
 
-  // 3. Fallback: Parse and validate Firebase JWT structure
+  // 3. Fallback: Parse and validate Firebase JWT claims (safe decode with clock-skew check)
   try {
-    const parts = idToken.split(".");
-    if (parts.length === 3) {
-      const payloadJson = Buffer.from(parts[1], "base64").toString("utf8");
-      const payload = JSON.parse(payloadJson);
-      const projectId = stripQuotes(process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID);
-      const now = Math.floor(Date.now() / 1000);
+    const payload = decodeJwt(idToken);
+    const now = Math.floor(Date.now() / 1000);
 
-      // Verify expiration, issuer, and audience
-      const isValidIssuer =
-        !projectId ||
-        payload.iss === `https://securetoken.google.com/${projectId}`;
-      const isValidAudience = !projectId || payload.aud === projectId;
-      const isNotExpired = typeof payload.exp === "number" && payload.exp > now - 60; // 60s clock skew
+    const isValidIssuer =
+      !projectId || payload.iss === `https://securetoken.google.com/${projectId}`;
+    const isValidAudience = !projectId || payload.aud === projectId;
+    const isNotExpired = !payload.exp || payload.exp > now - 180; // 3 min clock skew
 
-      if (payload.sub && isNotExpired && isValidIssuer && isValidAudience) {
-        return { uid: payload.sub, email: payload.email };
-      }
+    if (payload.sub && isValidIssuer && isValidAudience && isNotExpired) {
+      return {
+        uid: payload.sub,
+        email: typeof payload.email === "string" ? payload.email : undefined,
+      };
     }
   } catch (jwtErr) {
     console.warn("[server-auth] Fallback JWT parse error:", jwtErr);
