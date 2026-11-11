@@ -17,8 +17,6 @@ import {
   Compass,
   Briefcase,
   ArrowRight,
-  Info,
-  ShieldCheck,
 } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -73,20 +71,6 @@ const featureCards = [
 export default function DashboardPage() {
   return (
     <div className="space-y-8">
-      {/* Architecture Status Banner */}
-      <div className="p-4 rounded-2xl bg-gradient-to-r from-purple-950/40 via-blue-950/40 to-cyan-950/40 border border-purple-500/20 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-slate-300">
-        <div className="flex items-center gap-2.5">
-          <Info className="w-4 h-4 text-accent-cyan shrink-0" />
-          <span>
-            <strong>Architecture Status:</strong> Firebase Authentication (Part 2) and Supabase
-            PostgreSQL & Private Storage (Part 3) are active. Gemini Multimodal AI connects in Part 4.
-          </span>
-        </div>
-        <span className="shrink-0 font-mono text-[11px] text-accent-cyan bg-white/5 px-2.5 py-1 rounded-md border border-white/10">
-          Supabase + Firebase Active
-        </span>
-      </div>
-
       {/* Welcome Hero Banner */}
       <motion.div
         initial={{ opacity: 0, y: 15 }}
