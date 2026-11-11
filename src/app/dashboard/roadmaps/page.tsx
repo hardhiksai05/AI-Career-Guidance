@@ -2,30 +2,42 @@
 
 import React, { useState, useMemo, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import { Badge } from "@/components/ui/Badge";
 import { useAuth } from "@/context/AuthContext";
-import { isSupabaseConfigured } from "@/lib/supabase";
-import { getAllRoadmapProgress } from "@/lib/services/roadmap-service";
+import { isSupabaseConfigured, getSupabaseClient } from "@/lib/supabase";
 import {
-  CAREER_CATALOG,
-  CAREER_SECTORS,
-  CareerSector,
-  CareerItem,
-} from "@/lib/career-catalog";
-import { InteractiveRoadmapCanvas } from "@/components/roadmaps/InteractiveRoadmapCanvas";
-import { AnimeRoadmapHero } from "@/components/roadmaps/AnimeRoadmapHero";
+  getRoadmapProgress,
+  getAllRoadmapProgress,
+  saveRoadmapProgress,
+  RoadmapProgressData,
+} from "@/lib/services/roadmap-service";
+import {
+  ENGINEERING_BRANCHES,
+  BTECH_COURSES,
+  CAREER_FAMILIES,
+  getAllCareerRoles,
+  getBranchById,
+  getCoursesByBranch,
+  getCourseById,
+  getRoadmapById,
+  getPersonalizedRoadmaps,
+  PersonalizedRecommendation,
+  RoadmapData,
+} from "@/lib/btech-catalog";
+import { RoadmapHeader } from "@/components/roadmaps/RoadmapHeader";
+import { RoadmapFilters } from "@/components/roadmaps/RoadmapFilters";
+import { BranchCatalogueGrid } from "@/components/roadmaps/BranchCatalogueGrid";
+import { CourseDetailsView } from "@/components/roadmaps/CourseDetailsView";
+import { IndividualRoadmapViewer } from "@/components/roadmaps/IndividualRoadmapViewer";
+import { PersonalizedRecommendationsBanner } from "@/components/roadmaps/PersonalizedRecommendationsBanner";
 import { AnimatedRoadmapBackground } from "@/components/roadmaps/AnimatedRoadmapBackground";
 import {
-  Sparkles,
-  Zap,
-  Clock,
   Compass,
-  Trophy,
+  Briefcase,
+  BookOpen,
   ArrowRight,
+  ExternalLink,
   Shield,
-  Layers,
-  Flame,
-  CheckCircle2,
+  Sparkles,
 } from "lucide-react";
 
 function RoadmapsContent() {
@@ -33,178 +45,411 @@ function RoadmapsContent() {
   const isConfigured = isSupabaseConfigured();
   const searchParams = useSearchParams();
   const careerParam = searchParams.get("career");
+  const courseParam = searchParams.get("course");
+  const branchParam = searchParams.get("branch");
 
-  const [selectedSector, setSelectedSector] = useState<string>("All");
+  // Filter States
   const [searchQuery, setSearchQuery] = useState<string>("");
-  const [selectedCareerId, setSelectedCareerId] = useState<string>("tech-ai");
+  const [selectedBranchId, setSelectedBranchId] = useState<string>(branchParam || "cse-it");
+  const [selectedFamilyId, setSelectedFamilyId] = useState<string>("all");
+  const [selectedDifficulty, setSelectedDifficulty] = useState<string>("all");
+  const [selectedDuration, setSelectedDuration] = useState<string>("all");
 
-  // Track global XP / level across all visited or explored tracks
-  const [userXp, setUserXp] = useState<number>(450);
+  // Selected Course
+  const [selectedCourseId, setSelectedCourseId] = useState<string>("course-cse");
 
-  // If URL has ?career=..., select that career immediately
+  // Active Individual Roadmap View (null = viewing catalog, string = viewing roadmap ID)
+  const [activeRoadmapId, setActiveRoadmapId] = useState<string | null>("roadmap-frontend");
+
+  // Student Profile for Personalized Recommendations
+  const [studentProfile, setStudentProfile] = useState<{
+    branch?: string;
+    degree?: string;
+    skills?: string[];
+    careerGoals?: string[];
+  }>({});
+
+  // Topic Completion Tracking State (Pure educational progress tracking)
+  const [completedTopicIds, setCompletedTopicIds] = useState<string[]>([]);
+  const [activeRoadmapProgress, setActiveRoadmapProgress] = useState<RoadmapProgressData | null>(null);
+
+  // 1. Load Student Profile & Career Preferences from Supabase
   useEffect(() => {
-    if (careerParam) {
-      const match = CAREER_CATALOG.find(
-        (c) =>
-          c.id.toLowerCase() === careerParam.toLowerCase() ||
-          c.title.toLowerCase().includes(careerParam.toLowerCase())
-      );
-      if (match) {
-        setSelectedCareerId(match.id);
-        setSelectedSector("All");
-      }
-    }
-  }, [careerParam]);
-
-  // Load cumulative XP across all tracks from Supabase
-  useEffect(() => {
-    async function loadGlobalProgress() {
+    async function loadStudentProfile() {
       if (!user || !isConfigured) return;
       try {
-        const allTracks = await getAllRoadmapProgress(user.uid);
-        if (allTracks && allTracks.length > 0) {
-          const totalEarned = allTracks.reduce((sum, t) => sum + (t.total_xp || 0), 0);
-          setUserXp(Math.max(450, totalEarned));
-          // If no URL careerParam was provided, default to most recently accessed
-          if (!careerParam && allTracks[0]?.career_id) {
-            setSelectedCareerId(allTracks[0].career_id);
+        const supabase = getSupabaseClient();
+        const [profileRes, prefsRes] = await Promise.all([
+          supabase
+            .from("profiles")
+            .select("branch, degree, graduation_year")
+            .eq("firebase_uid", user.uid)
+            .maybeSingle(),
+          supabase
+            .from("career_preferences")
+            .select("preferred_domains, target_skills, career_goals")
+            .eq("firebase_uid", user.uid)
+            .maybeSingle(),
+        ]);
+
+        const profileData = profileRes.data;
+        const prefsData = prefsRes.data;
+
+        if (profileData || prefsData) {
+          setStudentProfile({
+            branch: profileData?.branch || "",
+            degree: profileData?.degree || "",
+            skills: prefsData?.target_skills || [],
+            careerGoals: prefsData?.career_goals || [],
+          });
+
+          // Match student branch to initial selection if present
+          if (profileData?.branch) {
+            const bNorm = profileData.branch.toLowerCase();
+            const matchingBranch = ENGINEERING_BRANCHES.find(
+              (b) =>
+                bNorm.includes(b.code.toLowerCase()) ||
+                bNorm.includes(b.name.toLowerCase().split(" ")[0])
+            );
+            if (matchingBranch && !branchParam) {
+              setSelectedBranchId(matchingBranch.id);
+            }
           }
         }
       } catch (err) {
-        console.warn("[RoadmapsPage] Could not load cumulative progress:", err);
+        console.warn("[RoadmapsPage] Profile lookup error:", err);
       }
     }
-    loadGlobalProgress();
-  }, [user, isConfigured, careerParam]);
-  const userLevel = useMemo(() => {
-    if (userXp >= 1800) return 6;
-    if (userXp >= 1200) return 5;
-    if (userXp >= 750) return 4;
-    if (userXp >= 400) return 3;
-    if (userXp >= 150) return 2;
-    return 1;
-  }, [userXp]);
+    loadStudentProfile();
+  }, [user, isConfigured, branchParam]);
 
-  // Filter careers by sector & search query
-  const filteredCareers = useMemo(() => {
-    return CAREER_CATALOG.filter((career) => {
-      const matchSector = selectedSector === "All" || career.sector === selectedSector;
+  // 2. Handle URL parameters (?career=..., ?course=..., ?branch=...)
+  useEffect(() => {
+    if (careerParam) {
+      // Find matching roadmap or role
+      const allRoles = getAllCareerRoles();
+      const role = allRoles.find(
+        (r) =>
+          r.id.toLowerCase() === careerParam.toLowerCase() ||
+          r.title.toLowerCase().includes(careerParam.toLowerCase())
+      );
+      if (role) {
+        setActiveRoadmapId(role.roadmapId || role.id);
+      } else {
+        setActiveRoadmapId(careerParam);
+      }
+    } else if (courseParam) {
+      const course = getCourseById(courseParam);
+      if (course) {
+        setSelectedCourseId(course.id);
+        setSelectedBranchId(course.branchId);
+        if (course.roadmapId) {
+          setActiveRoadmapId(course.roadmapId);
+        }
+      }
+    }
+  }, [careerParam, courseParam]);
+
+  // 3. Load Saved Roadmap Progress for Active Roadmap from Supabase
+  useEffect(() => {
+    async function loadProgress() {
+      if (!user || !isConfigured || !activeRoadmapId) return;
+      try {
+        const progress = await getRoadmapProgress(user.uid, activeRoadmapId);
+        if (progress) {
+          setActiveRoadmapProgress(progress);
+          setCompletedTopicIds(progress.completed_missions || []);
+        } else {
+          setCompletedTopicIds([]);
+        }
+      } catch (err) {
+        console.warn("[RoadmapsPage] Progress fetch error:", err);
+      }
+    }
+    loadProgress();
+  }, [user, isConfigured, activeRoadmapId]);
+
+  // Toggle Topic Completion & Save Progress
+  const handleToggleTopicCompletion = async (topicId: string) => {
+    const updated = completedTopicIds.includes(topicId)
+      ? completedTopicIds.filter((id) => id !== topicId)
+      : [...completedTopicIds, topicId];
+
+    setCompletedTopicIds(updated);
+
+    if (user && isConfigured && activeRoadmapId) {
+      const currentRoadmap = getRoadmapById(activeRoadmapId);
+      const totalTopics = currentRoadmap
+        ? currentRoadmap.phases.flatMap((p) => p.topics).length
+        : 10;
+      const progressPct = Math.min(100, Math.round((updated.length / totalTopics) * 100));
+
+      const payload: RoadmapProgressData = {
+        firebase_uid: user.uid,
+        career_id: activeRoadmapId,
+        career_title: currentRoadmap?.title || "Career Roadmap",
+        current_level: 1,
+        completed_missions: updated,
+        completed_subtopics: [],
+        progress_percentage: progressPct,
+      };
+
+      try {
+        await saveRoadmapProgress(payload);
+      } catch (err) {
+        console.warn("[RoadmapsPage] Save progress error:", err);
+      }
+    }
+  };
+
+  // Personalized Recommendations
+  const personalizedRecommendations = useMemo(() => {
+    return getPersonalizedRoadmaps(studentProfile);
+  }, [studentProfile]);
+
+  // Filtered Courses based on Search and Branch
+  const filteredCourses = useMemo(() => {
+    return BTECH_COURSES.filter((course) => {
+      const matchBranch = selectedBranchId === "all" || course.branchId === selectedBranchId;
       const q = searchQuery.toLowerCase().trim();
       const matchSearch =
         !q ||
-        career.title.toLowerCase().includes(q) ||
-        career.sector.toLowerCase().includes(q) ||
-        career.overview.toLowerCase().includes(q) ||
-        career.nodes.some((n) =>
-          n.skills.some((s) => s.toLowerCase().includes(q))
-        );
-      return matchSector && matchSearch;
-    });
-  }, [selectedSector, searchQuery]);
+        course.name.toLowerCase().includes(q) ||
+        course.code.toLowerCase().includes(q) ||
+        course.degreeName.toLowerCase().includes(q) ||
+        course.coreSubjects.some((s) => s.toLowerCase().includes(q)) ||
+        course.expectedSkills.some((s) => s.toLowerCase().includes(q));
 
-  const selectedCareer = useMemo(() => {
-    return (
-      CAREER_CATALOG.find((c) => c.id === selectedCareerId) ||
-      filteredCareers[0] ||
-      CAREER_CATALOG[0]
-    );
-  }, [selectedCareerId, filteredCareers]);
+      return matchBranch && matchSearch;
+    });
+  }, [selectedBranchId, searchQuery]);
+
+  // Filtered Career Roles based on Search, Family, Difficulty
+  const allRoles = useMemo(() => getAllCareerRoles(), []);
+
+  const filteredRoles = useMemo(() => {
+    return allRoles.filter((role) => {
+      const matchFamily = selectedFamilyId === "all" || role.familyId === selectedFamilyId;
+      const matchDifficulty =
+        selectedDifficulty === "all" || role.difficulty === selectedDifficulty;
+      const q = searchQuery.toLowerCase().trim();
+      const matchSearch =
+        !q ||
+        role.title.toLowerCase().includes(q) ||
+        role.tagline.toLowerCase().includes(q) ||
+        role.overview.toLowerCase().includes(q) ||
+        role.prerequisites.some((p) => p.toLowerCase().includes(q));
+
+      return matchFamily && matchDifficulty && matchSearch;
+    });
+  }, [allRoles, selectedFamilyId, selectedDifficulty, searchQuery]);
+
+  // Courses for the selected branch (for the course details view)
+  const branchCourses = useMemo(() => {
+    return getCoursesByBranch(selectedBranchId);
+  }, [selectedBranchId]);
+
+  // Current Active Roadmap Object
+  const currentRoadmapData = useMemo(() => {
+    return getRoadmapById(activeRoadmapId);
+  }, [activeRoadmapId]);
 
   return (
-    <div className="space-y-8 relative">
-      {/* Anime Energy Particles Background Canvas */}
+    <div className="space-y-10 relative">
       <AnimatedRoadmapBackground />
 
-      {/* 1. ANIME ROADMAP HERO SECTION */}
-      <AnimeRoadmapHero
-        searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
-        selectedSector={selectedSector}
-        onSectorSelect={setSelectedSector}
-        totalCareersCount={CAREER_CATALOG.length}
-        filteredCount={filteredCareers.length}
-        userXp={userXp}
-        userLevel={userLevel}
+      {/* SECTION 1: HEADER */}
+      <RoadmapHeader
+        totalCoursesCount={BTECH_COURSES.length}
+        totalBranchesCount={ENGINEERING_BRANCHES.length}
+        totalRolesCount={allRoles.length}
       />
 
-      {/* 2. CAREER CLASS SELECTOR CAROUSEL (RPG GUILD REGISTRY) */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-accent-purple animate-pulse" />
-            <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-300">
-              Select Career Destiny Class ({filteredCareers.length} Available)
-            </h3>
+      {/* SECTION 8: PERSONALIZED RECOMMENDATIONS BANNER */}
+      <PersonalizedRecommendationsBanner
+        recommendations={personalizedRecommendations}
+        studentBranch={studentProfile.branch}
+        studentDegree={studentProfile.degree}
+        onSelectRoadmap={(id) => {
+          setActiveRoadmapId(id);
+          window.scrollTo({ top: 350, behavior: "smooth" });
+        }}
+      />
+
+      {/* SECTION 2: SEARCH & FILTERS */}
+      <RoadmapFilters
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        selectedBranch={selectedBranchId}
+        onBranchChange={setSelectedBranchId}
+        selectedFamily={selectedFamilyId}
+        onFamilyChange={setSelectedFamilyId}
+        selectedDifficulty={selectedDifficulty}
+        onDifficultyChange={setSelectedDifficulty}
+        selectedDuration={selectedDuration}
+        onDurationChange={setSelectedDuration}
+        filteredCoursesCount={filteredCourses.length}
+        filteredRolesCount={filteredRoles.length}
+      />
+
+      {/* SECTION 5: INDIVIDUAL ROADMAP VIEWER (When active) */}
+      {currentRoadmapData && (
+        <div id="active-roadmap-viewer" className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-accent-cyan animate-pulse" />
+              <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-300">
+                Active Learning Roadmap
+              </h3>
+            </div>
+            <button
+              type="button"
+              onClick={() => setActiveRoadmapId(null)}
+              className="text-xs font-mono text-accent-cyan hover:underline"
+            >
+              Back to Catalog Overview
+            </button>
           </div>
-          <span className="text-[11px] font-mono text-slate-400">
-            Scroll horizontally to browse all classes
-          </span>
+
+          <IndividualRoadmapViewer
+            roadmap={currentRoadmapData}
+            completedTopicIds={completedTopicIds}
+            onToggleTopicCompletion={handleToggleTopicCompletion}
+            onClose={() => setActiveRoadmapId(null)}
+          />
+        </div>
+      )}
+
+      {/* SECTION 3: ENGINEERING BRANCH CARDS */}
+      <BranchCatalogueGrid
+        branches={ENGINEERING_BRANCHES}
+        selectedBranchId={selectedBranchId}
+        onSelectBranch={(branchId) => {
+          setSelectedBranchId(branchId);
+          const firstCourse = getCoursesByBranch(branchId)[0];
+          if (firstCourse) {
+            setSelectedCourseId(firstCourse.id);
+          }
+        }}
+      />
+
+      {/* SECTION 4: COURSE DETAILS & SPECIALIZATION BREAKDOWN */}
+      <CourseDetailsView
+        courses={branchCourses.length > 0 ? branchCourses : filteredCourses}
+        selectedCourseId={selectedCourseId}
+        onSelectCourse={setSelectedCourseId}
+        onLaunchRoadmap={(roadmapId) => {
+          setActiveRoadmapId(roadmapId);
+          const viewerEl = document.getElementById("active-roadmap-viewer");
+          if (viewerEl) {
+            viewerEl.scrollIntoView({ behavior: "smooth" });
+          } else {
+            window.scrollTo({ top: 400, behavior: "smooth" });
+          }
+        }}
+        careerRoles={allRoles}
+      />
+
+      {/* SECTION: CAREER FAMILIES EXPLORER (Across B.Tech Branches) */}
+      <div className="space-y-4 pt-4 border-t border-white/10">
+        <div>
+          <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight">
+            3. Explore Career Paths Across B.Tech Branches
+          </h2>
+          <p className="text-xs sm:text-sm text-slate-400">
+            A B.Tech graduate is not restricted to careers matching their degree. Explore high-growth opportunities across all 7 career families.
+          </p>
         </div>
 
-        {/* Horizontal Carousel */}
-        <div className="flex gap-3 overflow-x-auto pb-3 pt-1 scrollbar-thin scrollbar-thumb-purple-900/50">
-          {filteredCareers.map((c) => {
-            const isSelected = c.id === selectedCareer.id;
-            const rank = c.difficultyRank || "A-Rank";
-
+        {/* Career Family Filter Pills */}
+        <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-purple-900/50">
+          <button
+            type="button"
+            onClick={() => setSelectedFamilyId("all")}
+            className={`px-4 py-2 rounded-2xl text-xs font-bold transition-all shrink-0 ${
+              selectedFamilyId === "all"
+                ? "bg-accent-purple text-white shadow-glow-purple"
+                : "bg-white/5 text-slate-400 hover:text-white"
+            }`}
+          >
+            All Career Families ({allRoles.length})
+          </button>
+          {CAREER_FAMILIES.map((family) => {
+            const isSelected = selectedFamilyId === family.id;
             return (
               <button
-                key={c.id}
+                key={family.id}
                 type="button"
-                onClick={() => setSelectedCareerId(c.id)}
-                className={`p-4 rounded-2xl border text-left shrink-0 w-72 transition-all duration-200 relative group overflow-hidden ${
+                onClick={() => setSelectedFamilyId(family.id)}
+                className={`px-4 py-2 rounded-2xl text-xs font-bold transition-all shrink-0 ${
                   isSelected
-                    ? "bg-gradient-to-b from-[#1b1f48] to-[#0d1028] border-accent-purple shadow-glow-purple scale-[1.02]"
-                    : "bg-[#0a0d22]/90 border-white/10 hover:border-white/20 hover:bg-[#0f1430]"
+                    ? "bg-accent-purple text-white shadow-glow-purple"
+                    : "bg-white/5 text-slate-400 hover:text-white"
                 }`}
               >
-                {/* Glow Edge Indicator */}
-                {isSelected && (
-                  <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-accent-purple via-pink-500 to-accent-cyan" />
-                )}
-
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[10px] font-mono font-bold text-accent-cyan uppercase tracking-wider">
-                    {c.sector}
-                  </span>
-                  <span
-                    className={`text-[10px] font-mono font-extrabold px-2 py-0.5 rounded ${
-                      rank.startsWith("S")
-                        ? "bg-pink-950/80 text-pink-300 border border-pink-700/60"
-                        : "bg-purple-950/80 text-purple-300 border border-purple-700/60"
-                    }`}
-                  >
-                    {rank}
-                  </span>
-                </div>
-
-                <h4 className="text-sm font-black text-white truncate group-hover:text-accent-cyan transition-colors">
-                  {c.title}
-                </h4>
-
-                <p className="text-[11px] text-slate-400 mt-1 line-clamp-2 leading-relaxed">
-                  {c.tagline}
-                </p>
-
-                <div className="flex items-center justify-between pt-3 mt-3 border-t border-white/5 text-[10px] font-mono text-slate-400">
-                  <span className="flex items-center gap-1 text-amber-300">
-                    <Zap className="w-3 h-3" />
-                    +{c.totalXp || 2300} XP
-                  </span>
-                  <span className="flex items-center gap-1 text-slate-300">
-                    <Clock className="w-3 h-3" />
-                    {c.estimatedDuration || "6-12 Mo"}
-                  </span>
-                </div>
+                {family.name} ({family.roleCount})
               </button>
             );
           })}
         </div>
-      </div>
 
-      {/* 3. PRIMARY INTERACTIVE ROADMAP CANVAS (ALL 3 MODES + RPG HUD + INSPECTION MODALS) */}
-      <div className="space-y-4">
-        <InteractiveRoadmapCanvas career={selectedCareer} />
+        {/* Career Roles Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {filteredRoles.map((role) => (
+            <div
+              key={role.id}
+              onClick={() => {
+                setActiveRoadmapId(role.roadmapId || role.id);
+                window.scrollTo({ top: 380, behavior: "smooth" });
+              }}
+              className="p-5 rounded-3xl bg-[#0b0e26]/90 border border-white/10 hover:border-purple-500/40 hover:bg-[#10143a] transition-all cursor-pointer flex flex-col justify-between group"
+            >
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-mono font-bold text-accent-cyan uppercase tracking-wider">
+                    {role.familyId.replace("-", " & ").toUpperCase()}
+                  </span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-950/60 text-purple-300 border border-purple-800/40">
+                    {role.difficulty}
+                  </span>
+                </div>
+
+                <h4 className="text-base font-bold text-white group-hover:text-accent-cyan transition-colors">
+                  {role.title}
+                </h4>
+
+                <p className="text-xs text-slate-400 line-clamp-2 leading-relaxed">
+                  {role.tagline}
+                </p>
+
+                {role.governmentExamInfo && (
+                  <div className="p-2.5 rounded-xl bg-amber-950/30 border border-amber-500/30 text-[11px] text-amber-300 space-y-1">
+                    <div className="font-semibold">{role.governmentExamInfo.examName}</div>
+                    <div className="text-[10px] text-slate-400 line-clamp-2">
+                      {role.governmentExamInfo.eligibility}
+                    </div>
+                  </div>
+                )}
+
+                {role.higherEducationInfo && (
+                  <div className="p-2.5 rounded-xl bg-indigo-950/30 border border-indigo-500/30 text-[11px] text-indigo-300 space-y-1">
+                    <div className="font-semibold">{role.higherEducationInfo.targetDegree}</div>
+                    <div className="text-[10px] text-slate-400">
+                      Exams: {role.higherEducationInfo.entranceExams.join(", ")}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="pt-3 mt-3 border-t border-white/5 flex items-center justify-between text-xs font-mono">
+                <span className="text-slate-400">{role.averageSalary.split(" ")[0]}</span>
+                <span className="text-accent-cyan font-semibold inline-flex items-center gap-1">
+                  Launch Roadmap <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -212,7 +457,7 @@ function RoadmapsContent() {
 
 export default function RoadmapsPage() {
   return (
-    <Suspense fallback={<div className="p-12 text-center text-slate-400">Loading roadmaps...</div>}>
+    <Suspense fallback={<div className="p-12 text-center text-slate-400">Loading B.Tech Course & Career Roadmaps...</div>}>
       <RoadmapsContent />
     </Suspense>
   );

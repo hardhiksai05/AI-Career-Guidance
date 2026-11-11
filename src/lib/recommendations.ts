@@ -21,12 +21,32 @@ export interface CareerRecommendation {
 }
 
 /**
- * Finds the closest matching career in CAREER_CATALOG to link to interactive roadmaps.
+ * Finds the closest matching career or course roadmap in the B.Tech catalogue.
  */
 export function findMatchingRoadmapId(title: string, sector?: string): string {
   const normalizedTitle = title.toLowerCase();
 
-  // Direct ID check
+  // Primary roadmaps in B.Tech catalogue
+  if (normalizedTitle.includes("ai") || normalizedTitle.includes("artificial intelligence") || normalizedTitle.includes("llm") || normalizedTitle.includes("machine learning")) {
+    return "roadmap-ai-engineer";
+  }
+  if (normalizedTitle.includes("frontend") || normalizedTitle.includes("front end") || normalizedTitle.includes("ui") || normalizedTitle.includes("react")) {
+    return "roadmap-frontend";
+  }
+  if (normalizedTitle.includes("backend") || normalizedTitle.includes("back end") || normalizedTitle.includes("api") || normalizedTitle.includes("distributed")) {
+    return "roadmap-backend";
+  }
+  if (normalizedTitle.includes("full") || normalizedTitle.includes("web") || normalizedTitle.includes("software")) {
+    return "roadmap-frontend";
+  }
+  if (normalizedTitle.includes("mechanical") || normalizedTitle.includes("cad") || normalizedTitle.includes("design engineer") || normalizedTitle.includes("automobile")) {
+    return "roadmap-design-engineer";
+  }
+  if (normalizedTitle.includes("upsc") || normalizedTitle.includes("civil service") || normalizedTitle.includes("ias") || normalizedTitle.includes("public sector")) {
+    return "roadmap-upsc-cse";
+  }
+
+  // Direct ID check in CAREER_CATALOG
   const exactId = CAREER_CATALOG.find((c) => c.id === normalizedTitle);
   if (exactId) return exactId.id;
 
@@ -38,47 +58,17 @@ export function findMatchingRoadmapId(title: string, sector?: string): string {
   );
   if (exactTitle) return exactTitle.id;
 
-  // Keyword associations
-  if (normalizedTitle.includes("ai") || normalizedTitle.includes("artificial intelligence") || normalizedTitle.includes("llm")) {
-    return "tech-ai";
-  }
-  if (normalizedTitle.includes("machine learning") || normalizedTitle.includes("deep learning")) {
-    return "tech-ml";
-  }
   if (normalizedTitle.includes("data sci")) {
-    return "tech-data-science";
+    return "roadmap-ai-engineer";
   }
-  if (normalizedTitle.includes("data analy")) {
-    return "tech-data-analytics";
+  if (normalizedTitle.includes("cloud") || normalizedTitle.includes("devops") || normalizedTitle.includes("sre")) {
+    return "roadmap-backend";
   }
-  if (normalizedTitle.includes("cloud") || normalizedTitle.includes("devops") || normalizedTitle.includes("sre") || normalizedTitle.includes("infrastructure")) {
-    return "tech-cloud";
-  }
-  if (normalizedTitle.includes("cyber") || normalizedTitle.includes("security") || normalizedTitle.includes("infosec")) {
+  if (normalizedTitle.includes("cyber") || normalizedTitle.includes("security")) {
     return "tech-cybersecurity";
   }
-  if (normalizedTitle.includes("full") || normalizedTitle.includes("web") || normalizedTitle.includes("software")) {
-    return "tech-fullstack";
-  }
-  if (normalizedTitle.includes("product") || normalizedTitle.includes("management")) {
-    return "biz-product-manager";
-  }
-  if (normalizedTitle.includes("finance") || normalizedTitle.includes("quant")) {
-    return "fin-quant-analyst";
-  }
-  if (normalizedTitle.includes("robot") || normalizedTitle.includes("embed")) {
-    return "eng-robotics";
-  }
-  if (normalizedTitle.includes("bio") || normalizedTitle.includes("health")) {
-    return "health-bioinformatics";
-  }
-  if (normalizedTitle.includes("ux") || normalizedTitle.includes("ui") || normalizedTitle.includes("design")) {
-    return "creative-ux-designer";
-  }
 
-  // Fallback to sector first item or default
-  const sectorItem = CAREER_CATALOG.find((c) => c.sector === sector);
-  return sectorItem ? sectorItem.id : "tech-ai";
+  return "roadmap-frontend";
 }
 
 /**

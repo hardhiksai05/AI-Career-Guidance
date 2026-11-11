@@ -31,8 +31,8 @@ export const LearningProgressWidget: React.FC = () => {
 
   const fallbackRoadmap = DEMO_ROADMAPS[0];
   const title = activeTrack?.career_title || fallbackRoadmap.title;
-  const currentStage = activeTrack ? activeTrack.current_level : fallbackRoadmap.completedStages;
-  const totalStages = 6;
+  const currentPhase = activeTrack ? activeTrack.current_level : fallbackRoadmap.completedStages;
+  const totalPhases = 7;
   const progressPercent = activeTrack
     ? activeTrack.progress_percentage
     : Math.round((fallbackRoadmap.completedStages / fallbackRoadmap.totalStages) * 100);
@@ -53,14 +53,14 @@ export const LearningProgressWidget: React.FC = () => {
             </div>
           </div>
           <span className="text-xs font-bold text-accent-purple-light">
-            Stage {currentStage} / {totalStages}
+            Phase {currentPhase} / {totalPhases}
           </span>
         </div>
 
         <h3 className="text-base font-bold text-white mb-1">{title}</h3>
         <p className="text-xs text-slate-400 line-clamp-2 mb-3">
           {activeTrack
-            ? `Mastering Level ${currentStage} milestones in ${title}. ${activeTrack.completed_missions?.length || 0} quests completed.`
+            ? `Mastering Phase ${currentPhase} milestones in ${title}. ${activeTrack.completed_missions?.length || 0} topics completed.`
             : fallbackRoadmap.description}
         </p>
 
@@ -80,7 +80,7 @@ export const LearningProgressWidget: React.FC = () => {
 
       <div className="pt-3 border-t border-white/5 flex items-center justify-between text-xs">
         <span className="text-slate-400 flex items-center gap-1.5">
-          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> Current: Level {currentStage}
+          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> Current: Phase {currentPhase}
         </span>
         <Link
           href="/dashboard/roadmaps"

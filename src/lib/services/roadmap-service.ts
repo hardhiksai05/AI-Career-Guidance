@@ -3,30 +3,20 @@ import { getSupabaseClient, isSupabaseConfigured } from "@/lib/supabase";
 export interface RoadmapProgressData {
   id?: string;
   firebase_uid: string;
-  career_id: string;
+  career_id: string; // Course ID or Career ID
   career_title: string;
-  current_level: number;
-  completed_missions: string[];
-  completed_subtopics: string[];
-  total_xp: number;
+  current_level: number; // Current Learning Phase (1 to 7)
+  completed_missions: string[]; // Completed Topic IDs
+  completed_subtopics: string[]; // Completed Subtopic / Checkpoint IDs
+  total_xp?: number; // Maintained as optional/0 for database column backwards-compatibility
   progress_percentage: number;
   last_accessed_at?: string;
   created_at?: string;
   updated_at?: string;
 }
 
-export interface AchievementItem {
-  id: string;
-  achievement_code: string;
-  title: string;
-  description: string;
-  xp_reward: number;
-  icon?: string | null;
-  unlocked_at?: string;
-}
-
 /**
- * Fetch saved roadmap progress for a specific career track.
+ * Fetch saved roadmap progress for a specific course or career track.
  */
 export async function getRoadmapProgress(
   firebaseUid: string,
@@ -74,7 +64,8 @@ export async function getAllRoadmapProgress(
 }
 
 /**
- * Upsert roadmap progress (saves completed missions, subtopics, XP, and level).
+ * Upsert roadmap progress (saves completed topic IDs, active phase, and percentage).
+ * All gamification/XP calculations have been completely removed.
  */
 export async function saveRoadmapProgress(
   progress: RoadmapProgressData
@@ -91,7 +82,7 @@ export async function saveRoadmapProgress(
     current_level: progress.current_level,
     completed_missions: progress.completed_missions,
     completed_subtopics: progress.completed_subtopics,
-    total_xp: progress.total_xp,
+    total_xp: 0,
     progress_percentage: progress.progress_percentage,
     last_accessed_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -110,82 +101,3 @@ export async function saveRoadmapProgress(
 
   return data;
 }
-
-/**
- * Retrieves all unlocked achievements for a user.
- */
-export async function getUserAchievements(
-  firebaseUid: string
-): Promise<AchievementItem[]> {
-  if (!isSupabaseConfigured()) return [];
-  const supabase = getSupabaseClient();
-
-  const { data, error } = await supabase
-    .from("user_achievements")
-    .select("achievement_id, unlocked_at, achievements(id, achievement_code, title, description, xp_reward, icon)")
-    .eq("firebase_uid", firebaseUid);
-
-  if (error) {
-    console.error("[RoadmapService] Error fetching user achievements:", error);
-    throw error;
-  }
-
-  return (
-    data?.map((item: any) => ({
-      id: item.achievements.id,
-      achievement_code: item.achievements.achievement_code,
-      title: item.achievements.title,
-      description: item.achievements.description,
-      xp_reward: item.achievements.xp_reward,
-      icon: item.achievements.icon,
-      unlocked_at: item.unlocked_at,
-    })) || []
-  );
-}
-
-/**
- * Unlocks an achievement for the user by achievement_code using the secure server route.
- * Migrated to server API: POST /api/achievements/unlock.
- * Server verifies Firebase ID token and authenticates user; privileged verify_and_unlock_achievement
- * RPC validates actual mission/track progress in PostgreSQL before awarding (prevents arbitrary client self-awarding).
- */
-export async function unlockAchievement(
-  firebaseUid: string,
-  achievementCode: string,
-  careerId?: string
-): Promise<boolean> {
-  try {
-    const firebaseAuth = (await import("@/lib/firebase")).auth;
-    const token = await firebaseAuth?.currentUser?.getIdToken();
-
-    if (!token) {
-      console.warn("[RoadmapService] User not authenticated for achievement unlock");
-      return false;
-    }
-
-    const res = await fetch("/api/achievements/unlock", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        achievementCode,
-        careerId: careerId || null,
-      }),
-    });
-
-    if (res.ok) {
-      const result = await res.json();
-      return Boolean(result.unlocked);
-    } else {
-      const err = await res.json().catch(() => ({}));
-      console.warn("[RoadmapService] Achievement unlock API response:", err);
-      return false;
-    }
-  } catch (err) {
-    console.error("[RoadmapService] Error calling /api/achievements/unlock:", err);
-    return false;
-  }
-}
-
