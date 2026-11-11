@@ -12,6 +12,8 @@ export interface StudentAcademicInfo {
   branch: string;
   currentYear: string;
   graduationYear: string;
+  cgpa?: string | null;
+  phone?: string | null;
   submissionMethod: "manual" | "resume";
   resumeFile?: {
     name: string;
@@ -19,6 +21,14 @@ export interface StudentAcademicInfo {
     type: string;
     uploadedAt: string;
   } | null;
+  tempFileRef?: {
+    storagePath: string;
+    originalFilename: string;
+    fileSize: number;
+    fileType: string;
+    tempId: string;
+  } | null;
+  extractedCvData?: any | null;
 }
 
 export interface CareerPreferencesInfo {

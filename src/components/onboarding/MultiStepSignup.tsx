@@ -54,7 +54,20 @@ export const MultiStepSignup: React.FC = () => {
   };
 
   const handleStep2Submit = (academic: StudentAcademicInfo) => {
-    setFormData((prev) => ({ ...prev, academic }));
+    setFormData((prev) => {
+      const updatedPreferences = { ...prev.preferences };
+      if (
+        academic.extractedCvData?.technicalSkills &&
+        academic.extractedCvData.technicalSkills.length > 0
+      ) {
+        const extracted = academic.extractedCvData.technicalSkills.slice(0, 8);
+        const combined = Array.from(
+          new Set([...extracted, ...prev.preferences.targetSkills])
+        );
+        updatedPreferences.targetSkills = combined;
+      }
+      return { ...prev, academic, preferences: updatedPreferences };
+    });
     setCurrentStep(3);
   };
 

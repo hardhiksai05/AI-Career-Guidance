@@ -217,17 +217,9 @@ export default function OpportunitiesPage() {
       {/* 1. Header & Live Sync Actions */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-              CV-Matched Job Opportunities
-            </h1>
-            <Badge variant="cyan" size="sm" dot>
-              Gemini 2.5 Flash-Lite Active
-            </Badge>
-            <Badge variant="purple" size="sm">
-              Adzuna Job Data Engine
-            </Badge>
-          </div>
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight mb-1.5">
+            CV-Matched Job Opportunities
+          </h1>
           <p className="text-sm text-slate-400">
             Real engineering and tech positions algorithmic-ranked against your CV skills, coursework, and degree.
           </p>

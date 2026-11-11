@@ -61,11 +61,35 @@ export const Step4ReviewSummary: React.FC<Step4Props> = ({
           // ignore localStorage error
         }
       }
-      await signUp(
+      const createdUser = await signUp(
         data.basic.email,
         data.basic.password,
         data.basic.username || data.academic.fullName
       );
+
+      // Associate pending CV and extracted data with the new Firebase user
+      if (
+        createdUser &&
+        (data.academic.tempFileRef || data.academic.extractedCvData)
+      ) {
+        try {
+          const token = await createdUser.getIdToken();
+          await fetch("/api/onboarding/claim-cv", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              tempFileRef: data.academic.tempFileRef,
+              extractedData: data.academic.extractedCvData,
+            }),
+          });
+        } catch (claimErr) {
+          console.warn("[Step4] Onboarding claim-cv note:", claimErr);
+        }
+      }
+
       showToast({
         type: "success",
         title: "Account Created!",
@@ -186,13 +210,21 @@ export const Step4ReviewSummary: React.FC<Step4Props> = ({
           </div>
           <div className="text-xs">
             {data.academic.resumeFile ? (
-              <div className="flex items-center justify-between p-2.5 rounded-xl bg-cyan-950/30 border border-cyan-800/30 text-cyan-200">
-                <span className="font-medium truncate max-w-[240px]">
-                  {data.academic.resumeFile.name}
-                </span>
-                <span className="text-slate-400">
-                  {formatFileSize(data.academic.resumeFile.size)}
-                </span>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between p-2.5 rounded-xl bg-cyan-950/30 border border-cyan-800/30 text-cyan-200">
+                  <span className="font-medium truncate max-w-[240px]">
+                    {data.academic.resumeFile.name}
+                  </span>
+                  <span className="text-slate-400">
+                    {formatFileSize(data.academic.resumeFile.size)}
+                  </span>
+                </div>
+                {data.academic.extractedCvData && (
+                  <div className="flex items-center gap-2 text-[11px] text-purple-300">
+                    <Sparkles className="w-3.5 h-3.5 text-accent-cyan" />
+                    <span>Academic & professional credentials extracted and staged for account linking.</span>
+                  </div>
+                )}
               </div>
             ) : (
               <p className="text-slate-400 italic">
@@ -254,14 +286,6 @@ export const Step4ReviewSummary: React.FC<Step4Props> = ({
             </div>
           </div>
         </div>
-      </div>
-
-      {/* Notice Banner */}
-      <div className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-700/60 text-xs text-slate-400 flex items-center gap-2.5">
-        <ShieldCheck className="w-4 h-4 text-accent-cyan shrink-0" />
-        <span>
-          Frontend onboarding complete. In Part 2, real Firebase Auth will create this user session.
-        </span>
       </div>
 
       {/* Navigation Buttons */}

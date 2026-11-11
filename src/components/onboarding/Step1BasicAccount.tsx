@@ -7,7 +7,7 @@ import * as z from "zod";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { UserBasicInfo } from "@/types";
-import { User, Mail, Lock, ArrowRight, ShieldCheck } from "lucide-react";
+import { User, Mail, Lock, ArrowRight } from "lucide-react";
 
 const step1Schema = z
   .object({
@@ -133,11 +133,6 @@ export const Step1BasicAccount: React.FC<Step1Props> = ({ initialData, onNext })
           error={errors.confirmPassword?.message}
           {...register("confirmPassword")}
         />
-      </div>
-
-      <div className="p-3.5 rounded-xl bg-purple-950/30 border border-purple-500/20 flex items-center gap-2.5 text-xs text-purple-200">
-        <ShieldCheck className="w-4 h-4 text-accent-cyan shrink-0" />
-        <span>Your credentials will be handled securely via Firebase Authentication in Part 2.</span>
       </div>
 
       <div className="flex justify-end pt-4">

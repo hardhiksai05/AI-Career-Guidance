@@ -243,3 +243,4 @@ export const PremiumLoadingScreen: React.FC<PremiumLoadingScreenProps> = ({
 
   return <div className="py-16 sm:py-24">{content}</div>;
 };
+

@@ -94,14 +94,6 @@ export const DashboardSidebar: React.FC<DashboardSidebarProps> = ({
           )}
         </div>
 
-        {/* Auth Status Badge */}
-        {!collapsed && (
-          <div className="mx-4 my-3 px-3 py-2 rounded-xl bg-purple-950/40 border border-purple-500/20 flex items-center gap-2 text-[11px] text-purple-300">
-            <span className="w-2 h-2 rounded-full bg-accent-cyan animate-pulse shrink-0" />
-            <span>{isConfigured ? "Firebase Session Active" : "Student Workspace Active"}</span>
-          </div>
-        )}
-
         {/* Navigation Links */}
         <nav className="p-3 space-y-1.5 mt-2">
           {navItems.map((item) => {
