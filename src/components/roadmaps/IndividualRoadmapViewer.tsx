@@ -181,22 +181,35 @@ export const IndividualRoadmapViewer: React.FC<IndividualRoadmapViewerProps> = (
           </h2>
           <p className="text-sm text-slate-300 leading-relaxed">{roadmap.overview}</p>
 
-          {/* Source Attribution Notice */}
+          {/* Source Attribution Notice & Official roadmap.sh Link */}
           {roadmap.roadmapShReference && (
-            <div className="inline-flex items-center gap-2 text-xs text-slate-400 bg-white/[0.03] px-3 py-1.5 rounded-xl border border-white/5">
-              <span>Source & Structure Reference:</span>
-              <a
-                href={roadmap.roadmapShReference.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-accent-cyan hover:underline inline-flex items-center gap-1 font-semibold"
-              >
-                {roadmap.roadmapShReference.title}
-                <ExternalLink className="w-3 h-3" />
-              </a>
-              <span className="text-slate-500 text-[11px] hidden sm:inline">
-                ({roadmap.roadmapShReference.note})
-              </span>
+            <div className="flex flex-wrap items-center gap-3 pt-1">
+              {roadmap.roadmapShReference.url.includes("roadmap.sh") && (
+                <a
+                  href={roadmap.roadmapShReference.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-purple-900/60 to-cyan-900/60 border border-accent-purple/30 text-white hover:border-accent-cyan/60 text-xs font-semibold shadow-glow-purple transition-all"
+                >
+                  <span>View Official Roadmap on roadmap.sh</span>
+                  <ExternalLink className="w-3.5 h-3.5 text-accent-cyan" />
+                </a>
+              )}
+              <div className="inline-flex items-center gap-2 text-xs text-slate-400 bg-white/[0.03] px-3 py-1.5 rounded-xl border border-white/5">
+                <span>Source & Reference:</span>
+                <a
+                  href={roadmap.roadmapShReference.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-accent-cyan hover:underline inline-flex items-center gap-1 font-semibold"
+                >
+                  {roadmap.roadmapShReference.title}
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+                <span className="text-slate-500 text-[11px] hidden sm:inline">
+                  ({roadmap.roadmapShReference.note})
+                </span>
+              </div>
             </div>
           )}
 

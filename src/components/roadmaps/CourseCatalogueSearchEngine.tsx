@@ -533,3 +533,4 @@ export const CourseCatalogueSearchEngine: React.FC<Props> = ({
     </div>
   );
 };
+

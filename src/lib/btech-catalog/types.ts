@@ -24,7 +24,7 @@ export type CareerFamilyId =
   | "government-public"
   | "research-higher-ed";
 
-export type RoadmapDifficulty = "Beginner" | "Intermediate" | "Advanced";
+export type RoadmapDifficulty = "Beginner" | "Intermediate" | "Advanced" | "Beginner to Advanced";
 
 export interface EngineeringBranch {
   id: EngineeringBranchId;

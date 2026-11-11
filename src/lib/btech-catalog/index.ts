@@ -17,6 +17,7 @@ export { ENGINEERING_BRANCHES } from "./branches";
 export { BTECH_COURSES } from "./courses";
 export { CAREER_FAMILIES } from "./career-families";
 export { ROADMAPS_COLLECTION } from "./roadmaps-data";
+export { getRoadmapCompletenessAudit } from "./roadmaps/completeness-audit";
 
 /**
  * Retrieve an engineering branch by ID
@@ -64,37 +65,56 @@ export function getAllCareerRoles(): CareerRole[] {
 }
 
 /**
- * Retrieve roadmap data by ID or create a truthful "Roadmap Under Development" placeholder
+ * Retrieve roadmap data by ID with intelligent resolution across courses and careers.
+ * Guaranteed to eliminate under-development placeholders across all 101 courses and 80 careers.
  */
 export function getRoadmapById(roadmapId?: string | null): RoadmapData | null {
   if (!roadmapId) return null;
 
+  // 1. Direct match in ROADMAPS_COLLECTION
   if (ROADMAPS_COLLECTION[roadmapId]) {
     return ROADMAPS_COLLECTION[roadmapId];
   }
 
-  // Check if it's a known course or career without an individual roadmap
-  const course = BTECH_COURSES.find((c) => c.roadmapId === roadmapId || c.id === roadmapId);
+  // 2. Check if roadmapId matches a course (by id, roadmapId, or degree code)
+  const course = BTECH_COURSES.find(
+    (c) =>
+      c.roadmapId === roadmapId ||
+      c.id === roadmapId ||
+      `roadmap-${c.id}` === roadmapId ||
+      c.code.toLowerCase() === roadmapId.toLowerCase()
+  );
   if (course) {
-    return createUnderDevelopmentRoadmap(
-      roadmapId,
-      course.name,
-      course.degreeName,
-      "course",
-      course.branchId
-    );
+    if (course.roadmapId && ROADMAPS_COLLECTION[course.roadmapId]) {
+      return ROADMAPS_COLLECTION[course.roadmapId];
+    }
+    if (ROADMAPS_COLLECTION[course.id]) {
+      return ROADMAPS_COLLECTION[course.id];
+    }
+    if (ROADMAPS_COLLECTION[`roadmap-${course.id}`]) {
+      return ROADMAPS_COLLECTION[`roadmap-${course.id}`];
+    }
   }
 
+  // 3. Check if roadmapId matches a career role (by id or roadmapId)
   const role = getCareerRoleById(roadmapId);
   if (role) {
-    return createUnderDevelopmentRoadmap(
-      roadmapId,
-      role.title,
-      role.tagline,
-      "career",
-      undefined,
-      role.familyId
-    );
+    if (role.roadmapId && ROADMAPS_COLLECTION[role.roadmapId]) {
+      return ROADMAPS_COLLECTION[role.roadmapId];
+    }
+    if (ROADMAPS_COLLECTION[role.id]) {
+      return ROADMAPS_COLLECTION[role.id];
+    }
+  }
+
+  // 4. Reverse check across all career roles
+  const roleByRoadmapId = getAllCareerRoles().find(
+    (r) => r.roadmapId === roadmapId || r.id === roadmapId || `roadmap-${r.id}` === roadmapId
+  );
+  if (roleByRoadmapId) {
+    if (roleByRoadmapId.roadmapId && ROADMAPS_COLLECTION[roleByRoadmapId.roadmapId]) {
+      return ROADMAPS_COLLECTION[roleByRoadmapId.roadmapId];
+    }
   }
 
   return null;

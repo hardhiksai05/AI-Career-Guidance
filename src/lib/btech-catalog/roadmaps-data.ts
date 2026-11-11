@@ -1,6 +1,8 @@
 import { RoadmapData } from "./types";
+import { ALL_ROADMAPS_COLLECTION } from "./roadmaps";
 
 export const ROADMAPS_COLLECTION: Record<string, RoadmapData> = {
+  ...ALL_ROADMAPS_COLLECTION,
   // =========================================================================
   // 1. SOFTWARE & IT ROADMAPS (Referenced to roadmap.sh)
   // =========================================================================
