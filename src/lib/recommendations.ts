@@ -157,8 +157,8 @@ Respond with a strict JSON array of objects. Do not wrap in markdown quotes if p
 ]
 `;
 
-    const primaryModel = "gemini-2.5-flash";
-    const fallbackModel = "gemini-2.0-flash";
+    const primaryModel = "gemini-2.0-flash";
+    const fallbackModel = "gemini-1.5-flash";
 
     try {
       const response = await ai.models.generateContent({

@@ -210,8 +210,9 @@ export async function generateCareerAdvice(
     studentContext,
     Boolean(documentContext && documentContext.trim())
   );
-  const primaryModel = "gemini-2.5-flash";
-  const fallbackModel = "gemini-2.0-flash";
+  const primaryModel = "gemini-2.0-flash";
+  const fallbackModel = "gemini-1.5-flash";
+  const tertiaryModel = "gemini-1.5-pro";
 
   try {
     const response = await ai.models.generateContent({
@@ -249,10 +250,29 @@ export async function generateCareerAdvice(
       }
       return fallbackReply;
     } catch (fallbackErr: any) {
-      console.error(`[Gemini] Fallback model (${fallbackModel}) failed:`, fallbackErr?.message || fallbackErr);
-      throw new Error(
-        `Gemini AI service unavailable: ${primaryErr?.message || "Inference failed"}. Please retry shortly.`
-      );
+      console.warn(`[Gemini] Fallback model (${fallbackModel}) issue:`, fallbackErr?.message || fallbackErr);
+
+      try {
+        const tertiaryResponse = await ai.models.generateContent({
+          model: tertiaryModel,
+          contents,
+          config: {
+            systemInstruction,
+            temperature: 0.5,
+            maxOutputTokens: 2048,
+          },
+        });
+        const tertiaryReply = tertiaryResponse.text?.trim();
+        if (!tertiaryReply) {
+          throw new Error("Empty response received from tertiary Gemini model.");
+        }
+        return tertiaryReply;
+      } catch (tertiaryErr: any) {
+        console.error(`[Gemini] All models failed:`, tertiaryErr?.message || tertiaryErr);
+        throw new Error(
+          `Gemini AI service unavailable: ${primaryErr?.message || "Inference failed"}. Please retry shortly.`
+        );
+      }
     }
   }
 }
@@ -293,8 +313,9 @@ export async function* streamCareerAdvice(
     studentContext,
     Boolean(documentContext && documentContext.trim())
   );
-  const primaryModel = "gemini-2.5-flash";
-  const fallbackModel = "gemini-2.0-flash";
+  const primaryModel = "gemini-2.0-flash";
+  const fallbackModel = "gemini-1.5-flash";
+  const tertiaryModel = "gemini-1.5-pro";
 
   try {
     const stream = await ai.models.generateContentStream({
@@ -334,10 +355,31 @@ export async function* streamCareerAdvice(
         }
       }
     } catch (fallbackErr: any) {
-      console.error(`[Gemini Streaming] Fallback model (${fallbackModel}) failed:`, fallbackErr?.message || fallbackErr);
-      throw new Error(
-        `Gemini AI streaming unavailable: ${primaryErr?.message || "Inference failed"}. Please retry.`
-      );
+      console.warn(`[Gemini Streaming] Fallback model (${fallbackModel}) issue:`, fallbackErr?.message || fallbackErr);
+
+      try {
+        const tertiaryStream = await ai.models.generateContentStream({
+          model: tertiaryModel,
+          contents,
+          config: {
+            systemInstruction,
+            temperature: 0.5,
+            maxOutputTokens: 2048,
+          },
+        });
+
+        for await (const chunk of tertiaryStream) {
+          const text = chunk.text;
+          if (text) {
+            yield text;
+          }
+        }
+      } catch (tertiaryErr: any) {
+        console.error(`[Gemini Streaming] All models failed:`, tertiaryErr?.message || tertiaryErr);
+        throw new Error(
+          `Gemini AI streaming unavailable: ${primaryErr?.message || "Inference failed"}. Please retry.`
+        );
+      }
     }
   }
 }

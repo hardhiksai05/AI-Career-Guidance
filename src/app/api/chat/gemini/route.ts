@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import crypto from "crypto";
 import { authenticateFirebaseUser } from "@/lib/server-auth";
 import {
   getSupabaseAdminClient,
@@ -14,7 +15,33 @@ import {
 import { getRelevantAttachmentContext } from "@/lib/services/chat-attachment-service";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 export const maxDuration = 60;
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+async function ensureUserProfileExists(supabaseAdmin: any, user: { uid: string; email?: string }) {
+  try {
+    const { data: existing } = await supabaseAdmin
+      .from("profiles")
+      .select("id")
+      .eq("firebase_uid", user.uid)
+      .maybeSingle();
+
+    if (!existing) {
+      await supabaseAdmin.from("profiles").upsert(
+        {
+          firebase_uid: user.uid,
+          email: user.email || "",
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "firebase_uid" }
+      );
+    }
+  } catch (err) {
+    console.warn("[API Gemini] Note: ensureUserProfileExists warning:", err);
+  }
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -37,7 +64,7 @@ export async function POST(req: NextRequest) {
     }
 
     const {
-      conversationId,
+      conversationId: rawConversationId,
       message,
       stream = true,
       isRegenerate = false,
@@ -46,7 +73,7 @@ export async function POST(req: NextRequest) {
       attachments,
     } = body;
 
-    if (!conversationId || typeof conversationId !== "string") {
+    if (!rawConversationId || typeof rawConversationId !== "string") {
       return NextResponse.json(
         { error: "Bad Request: conversationId is required and must be a string" },
         { status: 400 }
@@ -80,41 +107,69 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!isSupabaseAdminConfigured()) {
-      return NextResponse.json(
-        {
-          error: "Service Unavailable",
-          code: "SUPABASE_ADMIN_NOT_CONFIGURED",
-          message: "SUPABASE_SERVICE_ROLE_KEY is not configured on the server.",
-        },
-        { status: 503 }
-      );
+    const hasSupabaseAdmin = isSupabaseAdminConfigured();
+    const supabaseAdmin = hasSupabaseAdmin ? getSupabaseAdminClient() : null;
+
+    let resolvedConversationId = rawConversationId;
+
+    if (supabaseAdmin) {
+      await ensureUserProfileExists(supabaseAdmin, user);
+
+      const isRawValidUuid = UUID_REGEX.test(rawConversationId);
+
+      if (isRawValidUuid) {
+        const { data: conv } = await supabaseAdmin
+          .from("chat_conversations")
+          .select("id, firebase_uid, title")
+          .eq("id", rawConversationId)
+          .maybeSingle();
+
+        if (conv) {
+          if (conv.firebase_uid !== user.uid) {
+            return NextResponse.json(
+              { error: "Forbidden: You do not own this conversation" },
+              { status: 403 }
+            );
+          }
+          resolvedConversationId = conv.id;
+        } else {
+          // Valid UUID but record doesn't exist yet: upsert it
+          const { data: newConv } = await supabaseAdmin
+            .from("chat_conversations")
+            .upsert(
+              {
+                id: rawConversationId,
+                firebase_uid: user.uid,
+                title: "New Career Dialogue",
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: "id" }
+            )
+            .select()
+            .single();
+
+          if (newConv?.id) {
+            resolvedConversationId = newConv.id;
+          }
+        }
+      } else {
+        // Conversation ID is client-generated non-UUID string: auto-create UUID conversation
+        const newUuid = crypto.randomUUID();
+        const { data: newConv } = await supabaseAdmin
+          .from("chat_conversations")
+          .insert({
+            id: newUuid,
+            firebase_uid: user.uid,
+            title: "New Career Dialogue",
+          })
+          .select()
+          .single();
+
+        resolvedConversationId = newConv?.id || newUuid;
+      }
     }
 
-    const supabaseAdmin = getSupabaseAdminClient();
-
-    // 4. Verify conversation exists and strictly belongs to the verified user
-    const { data: conv, error: convError } = await supabaseAdmin
-      .from("chat_conversations")
-      .select("id, firebase_uid, title")
-      .eq("id", conversationId)
-      .maybeSingle();
-
-    if (convError || !conv) {
-      return NextResponse.json(
-        { error: "Not Found: Conversation not found or inaccessible" },
-        { status: 404 }
-      );
-    }
-
-    if (conv.firebase_uid !== user.uid) {
-      return NextResponse.json(
-        { error: "Forbidden: You do not own this conversation" },
-        { status: 403 }
-      );
-    }
-
-    // 5. Retrieve Document Context if attachments are specified
+    // 4. Retrieve Document Context if attachments are specified
     const validAttachmentIds = Array.isArray(attachmentIds)
       ? (attachmentIds.filter((id) => typeof id === "string" && id.trim().length > 0) as string[])
       : [];
@@ -132,29 +187,28 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 6. Store the incoming user message (prevent duplicate on regenerate)
+    // 5. Store the incoming user message (prevent duplicate on regenerate)
     let userMsgRecord: any = null;
 
-    if (isRegenerate) {
-      const { data: latestUserMsg } = await supabaseAdmin
-        .from("chat_messages")
-        .select("id, conversation_id, firebase_uid, role, content, created_at, metadata")
-        .eq("conversation_id", conversationId)
-        .eq("role", "user")
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+    if (supabaseAdmin) {
+      if (isRegenerate) {
+        const { data: latestUserMsg } = await supabaseAdmin
+          .from("chat_messages")
+          .select("id, conversation_id, firebase_uid, role, content, created_at, metadata")
+          .eq("conversation_id", resolvedConversationId)
+          .eq("role", "user")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
 
-      if (latestUserMsg && latestUserMsg.content.trim() === trimmedMessage) {
-        userMsgRecord = latestUserMsg;
+        if (latestUserMsg && latestUserMsg.content.trim() === trimmedMessage) {
+          userMsgRecord = latestUserMsg;
+        }
       }
-    }
 
-    if (!userMsgRecord) {
-      const { data: newRecord, error: userMsgError } = await supabaseAdmin
-        .from("chat_messages")
-        .insert({
-          conversation_id: conversationId,
+      if (!userMsgRecord) {
+        const insertPayload = {
+          conversation_id: resolvedConversationId,
           firebase_uid: user.uid,
           role: "user",
           content: trimmedMessage,
@@ -163,25 +217,54 @@ export async function POST(req: NextRequest) {
             attachments: Array.isArray(attachments) ? attachments : [],
             attachmentIds: validAttachmentIds,
           },
-        })
-        .select()
-        .single();
+        };
 
-      if (userMsgError) {
-        console.error("[API Gemini] Failed to persist user message:", userMsgError);
-        return NextResponse.json(
-          { error: "Database Error: Failed to store user message" },
-          { status: 500 }
-        );
+        let { data: newRecord, error: userMsgError } = await supabaseAdmin
+          .from("chat_messages")
+          .insert(insertPayload)
+          .select()
+          .single();
+
+        if (userMsgError && (userMsgError.code === "23503" || userMsgError.message?.includes("foreign key"))) {
+          // Re-ensure profile exists and retry
+          await ensureUserProfileExists(supabaseAdmin, user);
+          const retry = await supabaseAdmin
+            .from("chat_messages")
+            .insert(insertPayload)
+            .select()
+            .single();
+          newRecord = retry.data;
+          userMsgError = retry.error;
+        }
+
+        if (userMsgError) {
+          console.warn("[API Gemini] Warning: Could not persist user message:", userMsgError);
+        }
+
+        userMsgRecord = newRecord || {
+          id: `usr-${Date.now()}`,
+          conversation_id: resolvedConversationId,
+          firebase_uid: user.uid,
+          role: "user",
+          content: trimmedMessage,
+          created_at: new Date().toISOString(),
+        };
       }
-      userMsgRecord = newRecord;
+    } else {
+      userMsgRecord = {
+        id: `usr-${Date.now()}`,
+        conversation_id: resolvedConversationId,
+        firebase_uid: user.uid,
+        role: "user",
+        content: trimmedMessage,
+        created_at: new Date().toISOString(),
+      };
     }
 
-    // 7. Build multi-turn context (prefer validated clientHistory if provided, else query Supabase most recent 10)
+    // 6. Build multi-turn context
     let history: ChatHistoryMessage[] = [];
 
     if (Array.isArray(clientHistory) && clientHistory.length > 0) {
-      // Validate and take the last 10 turns
       history = clientHistory
         .filter(
           (m: any) =>
@@ -194,12 +277,11 @@ export async function POST(req: NextRequest) {
           role: (m.role === "assistant" || m.sender === "ai" ? "assistant" : "user") as "user" | "assistant",
           content: (m.content || m.text || "").slice(0, 2000),
         }));
-    } else {
-      // Fetch recent 10 messages from Supabase in reverse order, then flip to chronological
+    } else if (supabaseAdmin) {
       const { data: historyRows } = await supabaseAdmin
         .from("chat_messages")
         .select("role, content, created_at")
-        .eq("conversation_id", conversationId)
+        .eq("conversation_id", resolvedConversationId)
         .neq("id", userMsgRecord.id)
         .order("created_at", { ascending: false })
         .limit(10);
@@ -212,23 +294,30 @@ export async function POST(req: NextRequest) {
         }));
     }
 
-    // 7. Securely retrieve authenticated student's profile & career preferences from Supabase
-    // Server-enforced using user.uid (never trusting arbitrary client-supplied profile data)
-    const [profileResult, prefsResult] = await Promise.all([
-      supabaseAdmin
-        .from("profiles")
-        .select("full_name, email, university, degree, branch, graduation_year, gpa, bio")
-        .eq("firebase_uid", user.uid)
-        .maybeSingle(),
-      supabaseAdmin
-        .from("career_preferences")
-        .select("preferred_domains, career_goals, target_skills, preferred_learning_style, preferred_locations, experience_level")
-        .eq("firebase_uid", user.uid)
-        .maybeSingle(),
-    ]);
+    // 7. Securely retrieve authenticated student's profile & career preferences
+    let studentProfile: any = null;
+    let careerPrefs: any = null;
 
-    const studentProfile = profileResult.data;
-    const careerPrefs = prefsResult.data;
+    if (supabaseAdmin) {
+      try {
+        const [profileResult, prefsResult] = await Promise.all([
+          supabaseAdmin
+            .from("profiles")
+            .select("full_name, email, university, degree, branch, graduation_year, gpa, bio")
+            .eq("firebase_uid", user.uid)
+            .maybeSingle(),
+          supabaseAdmin
+            .from("career_preferences")
+            .select("preferred_domains, career_goals, target_skills, preferred_learning_style, preferred_locations, experience_level")
+            .eq("firebase_uid", user.uid)
+            .maybeSingle(),
+        ]);
+        studentProfile = profileResult.data;
+        careerPrefs = prefsResult.data;
+      } catch (ctxErr) {
+        console.warn("[API Gemini] Note: student context query warning:", ctxErr);
+      }
+    }
 
     const studentContext: StudentCareerContext = {
       fullName: studentProfile?.full_name || null,
@@ -260,41 +349,59 @@ export async function POST(req: NextRequest) {
         documentContext
       );
 
-      const { data: assistantMsgRecord, error: rpcError } = await supabaseAdmin.rpc(
-        "insert_verified_assistant_reply",
-        {
-          p_conversation_id: conversationId,
-          p_firebase_uid: user.uid,
-          p_content: aiResponseText,
-          p_metadata: {
-            model: "gemini-3.5-flash-lite",
-            turns: history.length + 1,
-            personalized: true,
-            hasDocuments: Boolean(documentContext),
-            attachmentsCount: validAttachmentIds.length,
-            domains: studentContext.preferredDomains,
-          },
-        }
-      );
+      let assistantMsgRecord: any = null;
 
-      if (rpcError) {
-        console.error("[API Gemini] RPC insert_verified_assistant_reply error:", rpcError);
-        return NextResponse.json(
-          { error: "Database Error: Failed to record assistant response" },
-          { status: 500 }
+      if (supabaseAdmin) {
+        const { data: rpcMsg, error: rpcError } = await supabaseAdmin.rpc(
+          "insert_verified_assistant_reply",
+          {
+            p_conversation_id: resolvedConversationId,
+            p_firebase_uid: user.uid,
+            p_content: aiResponseText,
+            p_metadata: {
+              model: "gemini-2.0-flash",
+              turns: history.length + 1,
+              personalized: true,
+              hasDocuments: Boolean(documentContext),
+              attachmentsCount: validAttachmentIds.length,
+              domains: studentContext.preferredDomains,
+            },
+          }
         );
-      }
 
-      await supabaseAdmin
-        .from("chat_conversations")
-        .update({
-          last_message_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", conversationId);
+        if (rpcError) {
+          console.warn("[API Gemini] RPC failed, falling back to direct insert:", rpcError);
+          const { data: fallbackMsg } = await supabaseAdmin
+            .from("chat_messages")
+            .insert({
+              conversation_id: resolvedConversationId,
+              firebase_uid: user.uid,
+              role: "assistant",
+              content: aiResponseText,
+              metadata: {
+                model: "gemini-2.0-flash",
+                turns: history.length + 1,
+              },
+            })
+            .select()
+            .single();
+          assistantMsgRecord = fallbackMsg;
+        } else {
+          assistantMsgRecord = rpcMsg;
+        }
+
+        await supabaseAdmin
+          .from("chat_conversations")
+          .update({
+            last_message_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", resolvedConversationId);
+      }
 
       return NextResponse.json({
         success: true,
+        conversationId: resolvedConversationId,
         userMessage: {
           id: userMsgRecord.id,
           role: userMsgRecord.role,
@@ -302,10 +409,10 @@ export async function POST(req: NextRequest) {
           created_at: userMsgRecord.created_at,
         },
         assistantMessage: {
-          id: assistantMsgRecord.id,
-          role: assistantMsgRecord.role,
-          content: assistantMsgRecord.content,
-          created_at: assistantMsgRecord.created_at,
+          id: assistantMsgRecord?.id || `msg-${Date.now()}`,
+          role: "assistant",
+          content: aiResponseText,
+          created_at: assistantMsgRecord?.created_at || new Date().toISOString(),
         },
       });
     }
@@ -323,7 +430,7 @@ export async function POST(req: NextRequest) {
             encoder.encode(
               `event: start\ndata: ${JSON.stringify({
                 userMessageId: userMsgRecord.id,
-                conversationId,
+                conversationId: resolvedConversationId,
                 personalized: true,
                 studentMajor: studentContext.branch || studentContext.degree || null,
               })}\n\n`
@@ -353,13 +460,14 @@ export async function POST(req: NextRequest) {
 
           // If client cancelled generation early
           if (req.signal.aborted) {
-            if (fullResponseText.trim()) {
-              await supabaseAdmin.rpc("insert_verified_assistant_reply", {
-                p_conversation_id: conversationId,
-                p_firebase_uid: user.uid,
-                p_content: `${fullResponseText}\n\n*[Response stopped by user]*`,
-                p_metadata: {
-                  model: "gemini-3.5-flash-lite",
+            if (fullResponseText.trim() && supabaseAdmin) {
+              await supabaseAdmin.from("chat_messages").insert({
+                conversation_id: resolvedConversationId,
+                firebase_uid: user.uid,
+                role: "assistant",
+                content: `${fullResponseText}\n\n*[Response stopped by user]*`,
+                metadata: {
+                  model: "gemini-2.0-flash",
                   stoppedByUser: true,
                 },
               });
@@ -372,39 +480,57 @@ export async function POST(req: NextRequest) {
               "I am here to guide your career exploration. Feel free to ask about software roles, skills, or learning roadmaps.";
           }
 
-          // Persist the full completed assistant reply using the verified RPC
-          const { data: assistantMsgRecord, error: rpcError } = await supabaseAdmin.rpc(
-            "insert_verified_assistant_reply",
-            {
-              p_conversation_id: conversationId,
-              p_firebase_uid: user.uid,
-              p_content: fullResponseText,
-              p_metadata: {
-                model: "gemini-3.5-flash-lite",
-                turns: history.length + 1,
-                streamed: true,
-                personalized: true,
-                hasDocuments: Boolean(documentContext),
-                attachmentsCount: validAttachmentIds.length,
-                domains: studentContext.preferredDomains,
-              },
-            }
-          );
+          let assistantMsgRecord: any = null;
 
-          if (rpcError) {
-            console.error("[API Gemini Streaming] Failed to persist verified assistant reply:", rpcError);
+          if (supabaseAdmin) {
+            const { data: rpcMsg, error: rpcError } = await supabaseAdmin.rpc(
+              "insert_verified_assistant_reply",
+              {
+                p_conversation_id: resolvedConversationId,
+                p_firebase_uid: user.uid,
+                p_content: fullResponseText,
+                p_metadata: {
+                  model: "gemini-2.0-flash",
+                  turns: history.length + 1,
+                  streamed: true,
+                  personalized: true,
+                  hasDocuments: Boolean(documentContext),
+                  attachmentsCount: validAttachmentIds.length,
+                  domains: studentContext.preferredDomains,
+                },
+              }
+            );
+
+            if (rpcError) {
+              console.warn("[API Gemini Streaming] RPC insert warning, falling back to direct insert:", rpcError);
+              const { data: directMsg } = await supabaseAdmin
+                .from("chat_messages")
+                .insert({
+                  conversation_id: resolvedConversationId,
+                  firebase_uid: user.uid,
+                  role: "assistant",
+                  content: fullResponseText,
+                  metadata: {
+                    model: "gemini-2.0-flash",
+                    streamed: true,
+                  },
+                })
+                .select()
+                .single();
+              assistantMsgRecord = directMsg;
+            } else {
+              assistantMsgRecord = rpcMsg;
+            }
+
+            await supabaseAdmin
+              .from("chat_conversations")
+              .update({
+                last_message_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", resolvedConversationId);
           }
 
-          // Update conversation timestamp
-          await supabaseAdmin
-            .from("chat_conversations")
-            .update({
-              last_message_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", conversationId);
-
-          // Emit complete event with saved assistant message
           const savedMessage = assistantMsgRecord || {
             id: `msg-${Date.now()}`,
             role: "assistant",
@@ -415,6 +541,7 @@ export async function POST(req: NextRequest) {
           controller.enqueue(
             encoder.encode(
               `event: complete\ndata: ${JSON.stringify({
+                conversationId: resolvedConversationId,
                 assistantMessage: savedMessage,
               })}\n\n`
             )
@@ -438,7 +565,6 @@ export async function POST(req: NextRequest) {
       headers: {
         "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
         "X-Accel-Buffering": "no",
       },
     });

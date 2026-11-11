@@ -662,8 +662,19 @@ export default function ChatbotPage() {
         });
 
         if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.message || errData.error || `HTTP ${res.status}`);
+          let errorText = "";
+          try {
+            const raw = await res.text();
+            try {
+              const errJson = JSON.parse(raw);
+              errorText = errJson.message || errJson.error || raw;
+            } catch {
+              errorText = raw;
+            }
+          } catch {
+            errorText = `HTTP ${res.status}`;
+          }
+          throw new Error(errorText || `HTTP ${res.status}`);
         }
 
         const reader = res.body?.getReader();
@@ -690,7 +701,22 @@ export default function ChatbotPage() {
             const eventType = eventMatch ? eventMatch[1] : "delta";
             const dataRaw = dataMatch ? dataMatch[1] : null;
 
-            if (eventType === "delta" && dataRaw) {
+            if (eventType === "start" && dataRaw) {
+              try {
+                const parsed = JSON.parse(dataRaw);
+                if (parsed.conversationId && parsed.conversationId !== targetConvId) {
+                  const newDbId = parsed.conversationId;
+                  setConversations((prev) =>
+                    prev.map((c) =>
+                      c.id === targetConvId ? { ...c, id: newDbId } : c
+                    )
+                  );
+                  setActiveConvId(newDbId);
+                }
+              } catch (e) {
+                console.warn("[Chatbot Stream] Error parsing start event:", e);
+              }
+            } else if (eventType === "delta" && dataRaw) {
               try {
                 const parsed = JSON.parse(dataRaw);
                 if (parsed.chunk) {
@@ -723,6 +749,15 @@ export default function ChatbotPage() {
             } else if (eventType === "complete" && dataRaw) {
               try {
                 const parsed = JSON.parse(dataRaw);
+                if (parsed.conversationId && parsed.conversationId !== targetConvId) {
+                  const newDbId = parsed.conversationId;
+                  setConversations((prev) =>
+                    prev.map((c) =>
+                      c.id === targetConvId ? { ...c, id: newDbId } : c
+                    )
+                  );
+                  setActiveConvId(newDbId);
+                }
                 if (parsed.assistantMessage) {
                   const finalRecord = parsed.assistantMessage;
                   setConversations((prev) =>
