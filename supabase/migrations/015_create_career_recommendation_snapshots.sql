@@ -70,3 +70,4 @@ CREATE POLICY "Users can delete own recommendation snapshots"
   ON public.career_recommendation_snapshots FOR DELETE
   TO authenticated
   USING (firebase_uid = (auth.jwt()->>'sub'));
+
