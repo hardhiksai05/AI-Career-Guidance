@@ -116,3 +116,4 @@ export function checkChatMessageRateLimit(firebaseUid: string) {
     CHAT_MESSAGE_WINDOW_MS
   );
 }
+

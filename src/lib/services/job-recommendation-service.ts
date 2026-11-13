@@ -222,7 +222,7 @@ async function syncSharedJobInventory(): Promise<{ success: boolean; jobsCount: 
       40
     );
 
-    if (adzunaErr || rawJobs.length === 0) {
+    if (rawJobs.length === 0) {
       throw new Error(adzunaErr || "No jobs returned from Adzuna API");
     }
 
@@ -442,6 +442,49 @@ export async function getStudentJobRecommendations(
       }
     } catch (err) {
       console.warn("[JobRecService] DB jobs fetch fallback:", err);
+    }
+  }
+
+  // 3b. Robust Fallback: If DB table is empty or unmigrated, fetch directly from Adzuna / curated feed
+  if (activeJobs.length === 0) {
+    try {
+      const searchQueries = [
+        "Software Engineer",
+        "Full Stack Developer",
+        "Data Scientist AI",
+        "Cloud DevOps Engineer",
+      ];
+      const { jobs: fallbackRawJobs } = await fetchAdzunaJobs(searchQueries, ["India"], 30);
+      if (fallbackRawJobs && fallbackRawJobs.length > 0) {
+        activeJobs = fallbackRawJobs.map((raw) => {
+          const details = extractJobDetailsDeterministically(raw);
+          return {
+            id: raw.providerJobId,
+            provider: raw.provider,
+            provider_job_id: raw.providerJobId,
+            title: raw.title,
+            company: raw.company,
+            location: raw.location,
+            description: raw.description,
+            description_summary: details.descriptionSummary,
+            salary_min: raw.salaryMin,
+            salary_max: raw.salaryMax,
+            salary_is_predicted: raw.salaryIsPredicted,
+            contract_type: raw.contractType,
+            experience_level: details.experienceLevel,
+            category: raw.category,
+            required_skills: details.requiredSkills,
+            responsibilities: details.responsibilities,
+            qualifications: details.qualifications,
+            application_url: raw.applicationUrl,
+            posted_at: raw.postedAt,
+            content_hash: raw.contentHash,
+            is_active: true,
+          };
+        });
+      }
+    } catch (fallbackErr) {
+      console.warn("[JobRecService] Fallback job feed notice:", fallbackErr);
     }
   }
 
