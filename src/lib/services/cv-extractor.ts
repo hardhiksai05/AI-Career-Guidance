@@ -1,4 +1,5 @@
 import { getGeminiClient } from "@/lib/gemini";
+import { executeWithModelFallback } from "@/lib/ai-resilience";
 import {
   preprocessDocumentToMarkdown,
   DocumentPreprocessingResult,
@@ -155,73 +156,40 @@ Analyze this structured CV/Resume document and extract candidate details into th
     ];
   }
 
-  const primaryModel = "gemini-3.1-flash-lite";
-  const fallbackModel = "gemini-3.5-flash-lite";
+  const modelChain = [
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
+  ];
 
   let parsed: ExtractedCvData | null = null;
-  let lastError: any = null;
 
-  // Phase 6: Error Handling & Retry Loop with Model Fallback
-  // Try primary model (up to 3 attempts with progressive backoff for transient 503/429)
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const res = await ai.models.generateContent({
-        model: primaryModel,
-        contents: [{ role: "user", parts }],
-        config: {
-          systemInstruction: EXTRACTION_SYSTEM_INSTRUCTION,
-          temperature: 0.1,
-          responseMimeType: "application/json",
-        },
-      });
+  try {
+    const { result } = await executeWithModelFallback(
+      modelChain,
+      async (model) => {
+        const res = await ai.models.generateContent({
+          model,
+          contents: [{ role: "user", parts }],
+          config: {
+            systemInstruction: EXTRACTION_SYSTEM_INSTRUCTION,
+            temperature: 0.1,
+            responseMimeType: "application/json",
+          },
+        });
 
-      parsed = parseExtractionJson(res.text?.trim() || "");
-      if (parsed) break;
-    } catch (err: any) {
-      lastError = err;
-      const status = err?.status || err?.code;
-      console.warn(
-        `[CV Extractor] Attempt ${attempt} on ${primaryModel} failed (${status}):`,
-        err?.message || err
-      );
-
-      // If it's a transient 503 high-demand spike or rate limit, back off and retry
-      if (attempt < 3) {
-        const backoffMs = attempt * 2000;
-        console.log(`[CV Extractor] Waiting ${backoffMs}ms before attempt ${attempt + 1}...`);
-        await new Promise((resolve) => setTimeout(resolve, backoffMs));
-      }
-    }
-  }
-
-  // If primary model failed, try fallback model
-  if (!parsed) {
-    console.warn(`[CV Extractor] Attempting fallback model: ${fallbackModel}`);
-    try {
-      const fallbackRes = await ai.models.generateContent({
-        model: fallbackModel,
-        contents: [{ role: "user", parts }],
-        config: {
-          systemInstruction: EXTRACTION_SYSTEM_INSTRUCTION,
-          temperature: 0.1,
-          responseMimeType: "application/json",
-        },
-      });
-
-      parsed = parseExtractionJson(fallbackRes.text?.trim() || "");
-    } catch (fallbackErr: any) {
-      console.error(
-        `[CV Extractor] Fallback model (${fallbackModel}) failed:`,
-        fallbackErr?.message || fallbackErr
-      );
-      lastError = fallbackErr;
-    }
-  }
-
-  if (!parsed) {
-    const errorMsg =
-      lastError?.message || "Failed to extract CV information with Gemini AI";
-    throw new Error(`Gemini Extraction Error: ${errorMsg}`);
+        const extraction = parseExtractionJson(res.text?.trim() || "");
+        if (!extraction) {
+          throw new Error("Failed to parse extracted CV JSON structure.");
+        }
+        return extraction;
+      },
+      { taskName: "CV Extraction", timeoutMs: 30000, maxRetriesPerModel: 1 }
+    );
+    parsed = result;
+  } catch (err: any) {
+    console.error(`[CV Extractor] Multi-model extraction error:`, err?.message || err);
+    throw new Error("Unable to analyze CV document due to temporary AI service demand. Please retry in a moment.");
   }
 
   // Auto-detect GitHub profile link from markdown if not extracted by LLM

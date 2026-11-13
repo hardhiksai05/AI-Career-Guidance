@@ -10,6 +10,7 @@ import { preprocessDocumentToMarkdown } from "@/lib/services/document-to-markdow
 import {
   checkCvUploadRateLimit,
   cvExtractionHashCache,
+  getCvCacheKey,
 } from "@/lib/server-rate-limit";
 
 export const dynamic = "force-dynamic";
@@ -88,14 +89,15 @@ export async function POST(req: NextRequest) {
     const arrayBuffer = await fileBlob.arrayBuffer();
     const fileBuffer = Buffer.from(arrayBuffer);
     const contentHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+    const userCacheKey = getCvCacheKey(user.uid, contentHash);
 
     const extractedStoragePath = `${resume.storage_path}.extracted.json`;
     const markdownStoragePath = `${resume.storage_path}.normalized.md`;
 
-    // 4. Duplicate CV Detection: Check in-memory hash cache first
-    if (!forceReprocess && cvExtractionHashCache.has(contentHash)) {
-      const cached = cvExtractionHashCache.get(contentHash)!;
-      console.log(`[Resume Extract API] In-memory cache hit for SHA-256 hash ${contentHash.slice(0, 10)}. Reusing extraction without Gemini call.`);
+    // 4. Duplicate CV Detection: Check namespaced in-memory hash cache first
+    if (!forceReprocess && cvExtractionHashCache.has(userCacheKey)) {
+      const cached = cvExtractionHashCache.get(userCacheKey)!;
+      console.log(`[Resume Extract API] In-memory cache hit for hash ${contentHash.slice(0, 10)}. Reusing extraction without Gemini call.`);
 
       // Sync cached extraction to storage for this resume record
       const jsonBuffer = Buffer.from(JSON.stringify(cached.extractedData, null, 2), "utf8");
@@ -143,7 +145,7 @@ export async function POST(req: NextRequest) {
 
           if (cachedJson?._preprocessingMetrics?.contentHash === contentHash) {
             console.log(`[Resume Extract API] Storage cache hit for hash ${contentHash.slice(0, 8)}. Skipping Gemini reprocessing.`);
-            cvExtractionHashCache.set(contentHash, {
+            cvExtractionHashCache.set(userCacheKey, {
               extractedData: cachedJson,
               normalizedMarkdown,
               tokenMetrics: cachedJson._preprocessingMetrics,
@@ -251,8 +253,8 @@ export async function POST(req: NextRequest) {
         })
         .eq("id", resumeId);
 
-      // Cache extracted result by SHA-256 content hash
-      cvExtractionHashCache.set(contentHash, {
+      // Cache extracted result by user-namespaced SHA-256 content hash
+      cvExtractionHashCache.set(userCacheKey, {
         extractedData,
         normalizedMarkdown: preprocessingResult.markdown,
         tokenMetrics: extractedData._preprocessingMetrics,

@@ -25,8 +25,7 @@ export async function POST(req: NextRequest) {
         {
           success: false,
           code: "ADMIN_NOT_CONFIGURED",
-          message:
-            "Firebase Admin SDK is not configured in server environment variables. Please provide FIREBASE_ADMIN_PROJECT_ID, FIREBASE_ADMIN_CLIENT_EMAIL, and FIREBASE_ADMIN_PRIVATE_KEY in .env.local to enable server-side custom claim provisioning.",
+          message: "Server administration service is not currently configured. Continuing with standard authentication.",
         },
         { status: 200 }
       );

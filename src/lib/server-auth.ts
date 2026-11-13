@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { jwtVerify, createRemoteJWKSet, decodeJwt } from "jose";
+import { jwtVerify, createRemoteJWKSet } from "jose";
 
 export interface AuthenticatedUser {
   uid: string;
@@ -19,7 +19,7 @@ function stripQuotes(str?: string): string {
 }
 
 // Google's public JWKS keyset for cryptographically verifying Firebase ID Tokens
-// Cached in-memory by jose; uses native Web Crypto API with ZERO Node CJS dependencies.
+// Cached in-memory by jose; uses native Web Crypto API with strict RS256 signature verification.
 const GOOGLE_DISCOVERY_JWKS = createRemoteJWKSet(
   new URL("https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com")
 );
@@ -28,12 +28,11 @@ const GOOGLE_DISCOVERY_JWKS = createRemoteJWKSet(
  * Authenticates an incoming HTTP request using a Firebase ID Token passed in the
  * Authorization header: "Bearer <token>".
  *
- * Verification order:
+ * Security Requirements:
  * 1. Cryptographic RS256 signature verification via 'jose' and Google's official JWKS.
- * 2. Official Google Firebase REST verification endpoint (Identity Toolkit accounts:lookup).
- * 3. Safe claims decode fallback (issuer, audience, and clock-skew expiration check).
- *
- * Guaranteed NEVER to crash at module startup or throw ERR_REQUIRE_ESM.
+ * 2. Secondary verified fallback: Google Identity Toolkit accounts:lookup API.
+ * 3. STRICT: NEVER accept unverified or decode-only JWTs.
+ * 4. Return null immediately if verification fails.
  */
 export async function authenticateFirebaseUser(
   req: NextRequest
@@ -53,26 +52,28 @@ export async function authenticateFirebaseUser(
     stripQuotes(process.env.FIREBASE_PROJECT_ID) ||
     stripQuotes(process.env.FIREBASE_ADMIN_PROJECT_ID);
 
-  // 1. Primary: Cryptographic signature verification using jose and Google's public JWKS
+  // 1. Primary: Cryptographic RS256 signature verification using jose and Google's public JWKS
   if (projectId) {
     try {
       const { payload } = await jwtVerify(idToken, GOOGLE_DISCOVERY_JWKS, {
         issuer: `https://securetoken.google.com/${projectId}`,
         audience: projectId,
+        algorithms: ["RS256"],
       });
 
-      if (payload?.sub) {
+      if (payload?.sub && typeof payload.sub === "string") {
         return {
           uid: payload.sub,
           email: typeof payload.email === "string" ? payload.email : undefined,
         };
       }
     } catch (err: any) {
-      console.warn("[server-auth] Jose JWKS verification note:", err?.message || err);
+      // Signature verification failed or token expired
+      console.warn("[server-auth] Primary JWKS verification failed:", err?.code || err?.message);
     }
   }
 
-  // 2. Official Google Firebase REST verification fallback (Identity Toolkit)
+  // 2. Secondary Verified Fallback: Google Identity Toolkit endpoint (Google-authenticated lookup)
   const apiKey =
     stripQuotes(process.env.NEXT_PUBLIC_FIREBASE_API_KEY) ||
     stripQuotes(process.env.FIREBASE_API_KEY);
@@ -96,31 +97,17 @@ export async function authenticateFirebaseUser(
             email: user.email || undefined,
           };
         }
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        console.warn("[server-auth] Firebase REST verification rejected token:", errData?.error?.message || res.status);
       }
     } catch (err: any) {
-      console.warn("[server-auth] Firebase REST verification error:", err?.message || err);
+      console.warn("[server-auth] Firebase REST lookup network error:", err?.message || err);
     }
   }
 
-  // 3. Fallback: Parse and validate Firebase JWT claims (safe decode with clock-skew check)
-  try {
-    const payload = decodeJwt(idToken);
-    const now = Math.floor(Date.now() / 1000);
-
-    const isValidIssuer =
-      !projectId || payload.iss === `https://securetoken.google.com/${projectId}`;
-    const isValidAudience = !projectId || payload.aud === projectId;
-    const isNotExpired = !payload.exp || payload.exp > now - 180; // 3 min clock skew
-
-    if (payload.sub && isValidIssuer && isValidAudience && isNotExpired) {
-      return {
-        uid: payload.sub,
-        email: typeof payload.email === "string" ? payload.email : undefined,
-      };
-    }
-  } catch (jwtErr) {
-    console.warn("[server-auth] Fallback JWT parse error:", jwtErr);
-  }
-
+  // STRICT SECURITY INVARIANT:
+  // Both cryptographic JWKS and Google Identity Toolkit verification failed.
+  // Never accept an unverified token. Return null to enforce HTTP 401 Unauthorized.
   return null;
 }

@@ -1,4 +1,11 @@
 import { GoogleGenAI } from "@google/genai";
+import {
+  executeWithModelFallback,
+  isCircuitOpen,
+  recordModelSuccess,
+  recordModelFailure,
+  withTimeout,
+} from "./ai-resilience";
 
 // Ensure Gemini is exclusively instantiated and invoked on the server
 if (typeof window !== "undefined") {
@@ -210,32 +217,18 @@ export async function generateCareerAdvice(
     studentContext,
     Boolean(documentContext && documentContext.trim())
   );
-  const primaryModel = "gemini-3.1-flash-lite";
-  const fallbackModel = "gemini-3.5-flash-lite";
-  const tertiaryModel = "gemini-3.8-flash";
 
-  try {
-    const response = await ai.models.generateContent({
-      model: primaryModel,
-      contents,
-      config: {
-        systemInstruction,
-        temperature: 0.5,
-        maxOutputTokens: 2048,
-      },
-    });
+  const modelChain = [
+    stripOuterQuotes(process.env.GEMINI_CHAT_MODEL) || "gemini-3.1-flash-lite",
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
+  ].filter(Boolean);
 
-    const reply = response.text?.trim();
-    if (!reply) {
-      throw new Error("Empty response received from Gemini model.");
-    }
-    return reply;
-  } catch (primaryErr: any) {
-    console.warn(`[Gemini] Primary model (${primaryModel}) issue:`, primaryErr?.message || primaryErr);
-
-    try {
-      const fallbackResponse = await ai.models.generateContent({
-        model: fallbackModel,
+  const { result } = await executeWithModelFallback(
+    modelChain,
+    async (model) => {
+      const response = await ai.models.generateContent({
+        model,
         contents,
         config: {
           systemInstruction,
@@ -244,42 +237,21 @@ export async function generateCareerAdvice(
         },
       });
 
-      const fallbackReply = fallbackResponse.text?.trim();
-      if (!fallbackReply) {
-        throw new Error("Empty response received from fallback Gemini model.");
+      const reply = response.text?.trim();
+      if (!reply) {
+        throw new Error("Empty response received from Gemini model.");
       }
-      return fallbackReply;
-    } catch (fallbackErr: any) {
-      console.warn(`[Gemini] Fallback model (${fallbackModel}) issue:`, fallbackErr?.message || fallbackErr);
+      return reply;
+    },
+    { taskName: "Career Advice", timeoutMs: 20000, maxRetriesPerModel: 1 }
+  );
 
-      try {
-        const tertiaryResponse = await ai.models.generateContent({
-          model: tertiaryModel,
-          contents,
-          config: {
-            systemInstruction,
-            temperature: 0.5,
-            maxOutputTokens: 2048,
-          },
-        });
-        const tertiaryReply = tertiaryResponse.text?.trim();
-        if (!tertiaryReply) {
-          throw new Error("Empty response received from tertiary Gemini model.");
-        }
-        return tertiaryReply;
-      } catch (tertiaryErr: any) {
-        console.error(`[Gemini] All models failed:`, tertiaryErr?.message || tertiaryErr);
-        throw new Error(
-          `Gemini AI service unavailable: ${primaryErr?.message || "Inference failed"}. Please retry shortly.`
-        );
-      }
-    }
-  }
+  return result;
 }
 
 /**
  * Streams career guidance response using Google Gemini AI with personalized student context.
- * Uses primary model gemini-3.5-flash-lite with fallback to gemini-3.1-flash-lite.
+ * Features circuit breaker protection and automatic fallback across models.
  * Yields progressive text chunks.
  */
 export async function* streamCareerAdvice(
@@ -313,73 +285,69 @@ export async function* streamCareerAdvice(
     studentContext,
     Boolean(documentContext && documentContext.trim())
   );
-  const primaryModel = "gemini-3.1-flash-lite";
-  const fallbackModel = "gemini-3.5-flash-lite";
-  const tertiaryModel = "gemini-3.8-flash";
 
-  try {
-    const stream = await ai.models.generateContentStream({
-      model: primaryModel,
-      contents,
-      config: {
-        systemInstruction,
-        temperature: 0.5,
-        maxOutputTokens: 2048,
-      },
-    });
+  const modelChain = [
+    stripOuterQuotes(process.env.GEMINI_CHAT_MODEL) || "gemini-3.1-flash-lite",
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
+  ].filter(Boolean);
 
-    for await (const chunk of stream) {
-      const text = chunk.text;
-      if (text) {
-        yield text;
-      }
+  let streamSucceeded = false;
+  let lastStreamError: any = null;
+
+  for (let mIdx = 0; mIdx < modelChain.length; mIdx++) {
+    const model = modelChain[mIdx];
+
+    // Circuit breaker check
+    if (isCircuitOpen(model)) {
+      console.warn(`[Gemini Streaming] Circuit is OPEN for model '${model}'. Skipping immediately to fallback.`);
+      continue;
     }
-  } catch (primaryErr: any) {
-    console.warn(`[Gemini Streaming] Primary model (${primaryModel}) issue:`, primaryErr?.message || primaryErr);
 
+    const start = Date.now();
     try {
-      const fallbackStream = await ai.models.generateContentStream({
-        model: fallbackModel,
-        contents,
-        config: {
-          systemInstruction,
-          temperature: 0.5,
-          maxOutputTokens: 2048,
-        },
-      });
-
-      for await (const chunk of fallbackStream) {
-        const text = chunk.text;
-        if (text) {
-          yield text;
-        }
-      }
-    } catch (fallbackErr: any) {
-      console.warn(`[Gemini Streaming] Fallback model (${fallbackModel}) issue:`, fallbackErr?.message || fallbackErr);
-
-      try {
-        const tertiaryStream = await ai.models.generateContentStream({
-          model: tertiaryModel,
+      // Connect to stream with a 15-second setup timeout
+      const stream = await withTimeout(
+        ai.models.generateContentStream({
+          model,
           contents,
           config: {
             systemInstruction,
             temperature: 0.5,
             maxOutputTokens: 2048,
           },
-        });
+        }),
+        15000,
+        `Streaming Setup (${model})`
+      );
 
-        for await (const chunk of tertiaryStream) {
-          const text = chunk.text;
-          if (text) {
-            yield text;
-          }
+      let chunkCount = 0;
+      for await (const chunk of stream) {
+        const text = chunk.text;
+        if (text) {
+          chunkCount++;
+          yield text;
         }
-      } catch (tertiaryErr: any) {
-        console.error(`[Gemini Streaming] All models failed:`, tertiaryErr?.message || tertiaryErr);
-        throw new Error(
-          `Gemini AI streaming unavailable: ${primaryErr?.message || "Inference failed"}. Please retry.`
-        );
       }
+
+      recordModelSuccess(model, Date.now() - start);
+      streamSucceeded = true;
+      if (mIdx > 0) {
+        console.log(`[Gemini Streaming] Successfully recovered using fallback model '${model}' (${chunkCount} chunks).`);
+      }
+      return;
+    } catch (modelErr: any) {
+      lastStreamError = modelErr;
+      const duration = Date.now() - start;
+      recordModelFailure(model, modelErr, duration);
+      console.warn(`[Gemini Streaming] Model '${model}' failed during stream (${duration}ms):`, modelErr?.message || modelErr);
     }
+  }
+
+  if (!streamSucceeded) {
+    console.error("[Gemini Streaming] All configured models failed in streaming chain:", lastStreamError);
+    throw new Error(
+      "AI guidance service is temporarily unavailable due to high demand. Please retry in a few moments."
+    );
   }
 }

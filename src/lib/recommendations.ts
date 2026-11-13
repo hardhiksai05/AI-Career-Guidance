@@ -1,5 +1,6 @@
 import { getGeminiClient, isGeminiConfigured, StudentCareerContext } from "./gemini";
 import { CAREER_CATALOG } from "./career-catalog";
+import { executeWithModelFallback } from "./ai-resilience";
 
 export interface CareerRecommendation {
   id: string;
@@ -147,53 +148,41 @@ Respond with a strict JSON array of objects. Do not wrap in markdown quotes if p
 ]
 `;
 
-    const primaryModel = "gemini-3.1-flash-lite";
-    const fallbackModel = "gemini-3.5-flash-lite";
+    const modelChain = [
+      "gemini-3.1-flash-lite",
+      "gemini-3.5-flash-lite",
+      "gemini-3.8-flash",
+    ];
 
     try {
-      const response = await ai.models.generateContent({
-        model: primaryModel,
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        config: {
-          temperature: 0.4,
-          responseMimeType: "application/json",
+      const { result } = await executeWithModelFallback(
+        modelChain,
+        async (model) => {
+          const response = await ai.models.generateContent({
+            model,
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            config: {
+              temperature: 0.4,
+              responseMimeType: "application/json",
+            },
+          });
+
+          const rawJson = response.text?.trim() || "";
+          const parsed = parseRecommendationJson(rawJson);
+          if (parsed && parsed.length >= 5) {
+            return parsed.map((item) => ({
+              ...item,
+              roadmapId: findMatchingRoadmapId(item.title, item.sector),
+            }));
+          }
+          throw new Error("Gemini returned insufficient recommendations count");
         },
-      });
+        { taskName: "Career Recommendations", timeoutMs: 25000, maxRetriesPerModel: 1 }
+      );
 
-      const rawJson = response.text?.trim() || "";
-      const parsed = parseRecommendationJson(rawJson);
-      if (parsed && parsed.length >= 5) {
-        return parsed.map((item) => ({
-          ...item,
-          roadmapId: findMatchingRoadmapId(item.title, item.sector),
-        }));
-      }
-      throw new Error("Gemini returned insufficient recommendations count");
+      return result;
     } catch (err: any) {
-      console.warn(`[Recommendations Engine] Primary model (${primaryModel}) issue:`, err?.message || err);
-
-      try {
-        const fallbackResponse = await ai.models.generateContent({
-          model: fallbackModel,
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          config: {
-            temperature: 0.4,
-            responseMimeType: "application/json",
-          },
-        });
-
-        const fallbackJson = fallbackResponse.text?.trim() || "";
-        const parsedFallback = parseRecommendationJson(fallbackJson);
-        if (parsedFallback && parsedFallback.length >= 5) {
-          return parsedFallback.map((item) => ({
-            ...item,
-            roadmapId: findMatchingRoadmapId(item.title, item.sector),
-          }));
-        }
-      } catch (fallbackErr: any) {
-        console.error(`[Recommendations Engine] Fallback model failed:`, fallbackErr?.message || fallbackErr);
-      }
-
+      console.warn(`[Recommendations Engine] Multi-model AI generation exhausted, falling back to deterministic profile matching:`, err?.message || err);
       // Deterministic fallback based on profile if upstream API is offline
       return generateDeterministicFallback(context);
     }

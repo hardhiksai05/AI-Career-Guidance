@@ -604,9 +604,11 @@ export async function POST(req: NextRequest) {
               }
             );
 
+            let persistenceFailed = false;
+
             if (rpcError) {
               console.warn("[API Gemini Streaming] RPC insert warning, falling back to direct insert:", rpcError);
-              const { data: directMsg } = await supabaseAdmin
+              const { data: directMsg, error: insertError } = await supabaseAdmin
                 .from("chat_messages")
                 .insert({
                   conversation_id: resolvedConversationId,
@@ -620,18 +622,34 @@ export async function POST(req: NextRequest) {
                 })
                 .select()
                 .single();
-              assistantMsgRecord = directMsg;
+
+              if (insertError || !directMsg) {
+                console.error("[API Gemini Streaming] Direct persistence failed:", insertError);
+                persistenceFailed = true;
+                controller.enqueue(
+                  encoder.encode(
+                    `event: error\ndata: ${JSON.stringify({
+                      warning: "Response generated, but could not be saved to conversation history.",
+                      saved: false,
+                    })}\n\n`
+                  )
+                );
+              } else {
+                assistantMsgRecord = directMsg;
+              }
             } else {
               assistantMsgRecord = rpcMsg;
             }
 
-            await supabaseAdmin
-              .from("chat_conversations")
-              .update({
-                last_message_at: new Date().toISOString(),
-                updated_at: new Date().toISOString(),
-              })
-              .eq("id", resolvedConversationId);
+            if (!persistenceFailed) {
+              await supabaseAdmin
+                .from("chat_conversations")
+                .update({
+                  last_message_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("id", resolvedConversationId);
+            }
           }
 
           const savedMessage = assistantMsgRecord || {
@@ -647,6 +665,7 @@ export async function POST(req: NextRequest) {
                 conversationId: resolvedConversationId,
                 title: resolvedTitle,
                 assistantMessage: savedMessage,
+                persistenceFailed: !assistantMsgRecord,
               })}\n\n`
             )
           );

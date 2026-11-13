@@ -1,4 +1,5 @@
 import { getGeminiClient, isGeminiConfigured } from "@/lib/gemini";
+import { executeWithModelFallback } from "@/lib/ai-resilience";
 import { RawJobListing } from "./adzuna-service";
 
 export interface ProcessedJobDetails {
@@ -25,12 +26,18 @@ export function getJobProcessingModelName(): string {
 export async function processJobDescriptionWithGemini(
   job: RawJobListing
 ): Promise<ProcessedJobDetails> {
-  const modelName = getJobProcessingModelName();
+  const primaryModel = getJobProcessingModelName();
 
   if (!isGeminiConfigured()) {
     console.log("[GeminiJobProcessor] Gemini unconfigured, falling back to deterministic extraction.");
     return extractJobDetailsDeterministically(job);
   }
+
+  const modelChain = Array.from(new Set([
+    primaryModel,
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
+  ])).filter(Boolean);
 
   try {
     const ai = getGeminiClient();
@@ -67,22 +74,26 @@ Return valid JSON adhering strictly to this schema:
 }
 `;
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
+    const { result, modelUsed } = await executeWithModelFallback(
+      modelChain,
+      async (model) => {
+        const response = await ai.models.generateContent({
+          model,
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          config: {
+            temperature: 0.2,
+            responseMimeType: "application/json",
+          },
+        });
 
-    const response = await ai.models.generateContent({
-      model: modelName,
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      config: {
-        temperature: 0.2,
-        responseMimeType: "application/json",
+        const text = response.text || "";
+        const parsed = JSON.parse(text);
+        return { parsed, model };
       },
-    });
+      { taskName: "Job Description Parser", timeoutMs: 14000, maxRetriesPerModel: 1 }
+    );
 
-    clearTimeout(timeout);
-
-    const text = response.text || "";
-    const parsed = JSON.parse(text);
+    const parsed = result.parsed;
 
     return {
       requiredSkills: Array.isArray(parsed.requiredSkills) ? parsed.requiredSkills.filter(Boolean) : [],
@@ -91,11 +102,11 @@ Return valid JSON adhering strictly to this schema:
       descriptionSummary: parsed.descriptionSummary || job.description.slice(0, 200) + "...",
       responsibilities: Array.isArray(parsed.responsibilities) ? parsed.responsibilities.filter(Boolean) : [],
       category: parsed.category || job.category || "Technology & Engineering",
-      extractedWithModel: modelName,
+      extractedWithModel: modelUsed,
       usedAi: true,
     };
   } catch (err: any) {
-    console.warn(`[GeminiJobProcessor] Gemini (${modelName}) failed or timed out: ${err?.message}. Using deterministic fallback.`);
+    console.warn(`[GeminiJobProcessor] All Gemini fallback models failed: ${err?.message}. Using deterministic fallback.`);
     return extractJobDetailsDeterministically(job);
   }
 }

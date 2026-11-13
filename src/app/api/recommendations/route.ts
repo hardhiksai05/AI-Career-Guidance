@@ -6,6 +6,7 @@ import {
 } from "@/lib/supabase-server";
 import { StudentCareerContext } from "@/lib/gemini";
 import { generateRecommendationsWithGemini, CareerRecommendation } from "@/lib/recommendations";
+import { checkRecommendationRegenRateLimit } from "@/lib/server-rate-limit";
 import {
   getLatestStudentCv,
   getCvContentHash,
@@ -35,9 +36,30 @@ async function handleRecommendations(req: NextRequest, forceRegenerate: boolean)
     const user = await authenticateFirebaseUser(req);
     if (!user) {
       return NextResponse.json(
-        { error: "Unauthorized: Invalid or missing Firebase authentication token" },
+        { error: "Unauthorized", message: "Invalid or missing Firebase authentication token" },
         { status: 401 }
       );
+    }
+
+    // 1b. Rate Limit forceRegenerate to prevent token exhaustion: Max 3 per 30 minutes
+    if (forceRegenerate) {
+      const regenRateLimit = checkRecommendationRegenRateLimit(user.uid);
+      if (!regenRateLimit.allowed) {
+        console.warn(`[API Recommendations] User ${user.uid} hit recommendation regeneration limit. Retry in ${regenRateLimit.retryAfterSeconds}s.`);
+        return NextResponse.json(
+          {
+            error: "Rate Limit Exceeded",
+            message: "You have reached the career recommendation regeneration limit. You can regenerate recommendations up to 3 times every 30 minutes. Please try again later.",
+            retryAfter: regenRateLimit.retryAfterSeconds,
+          },
+          {
+            status: 429,
+            headers: {
+              "Retry-After": String(regenRateLimit.retryAfterSeconds),
+            },
+          }
+        );
+      }
     }
 
     // 2. Retrieve user's saved career bookmarks for enrichment
@@ -250,7 +272,7 @@ async function handleRecommendations(req: NextRequest, forceRegenerate: boolean)
     return NextResponse.json(
       {
         error: "Internal Server Error",
-        message: error?.message || "Failed to process career recommendations",
+        message: "Failed to generate career recommendations. Please try again later.",
       },
       { status: 500 }
     );

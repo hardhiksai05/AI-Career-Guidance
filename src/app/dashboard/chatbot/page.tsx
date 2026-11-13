@@ -1016,12 +1016,29 @@ export default function ChatbotPage() {
                     })
                   );
                 }
+                if (parsed.persistenceFailed) {
+                  showToast({
+                    type: "warning",
+                    title: "Cloud Sync Notice",
+                    description: "Response generated successfully, but could not be saved to cloud history.",
+                    duration: 4500,
+                  });
+                }
               } catch (e) {
                 console.warn("[Chatbot Stream] Error parsing complete event:", e);
               }
             } else if (eventType === "error" && dataRaw) {
               try {
                 const parsed = JSON.parse(dataRaw);
+                if (parsed.warning) {
+                  showToast({
+                    type: "warning",
+                    title: "History Sync Warning",
+                    description: parsed.warning,
+                    duration: 5000,
+                  });
+                  continue;
+                }
                 throw new Error(parsed.error || "Streaming generation failed");
               } catch (e: any) {
                 throw e;

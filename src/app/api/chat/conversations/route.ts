@@ -101,89 +101,84 @@ export async function GET(req: NextRequest) {
     const supabaseAdmin = getSupabaseAdminClient();
     const url = new URL(req.url);
     const conversationId = url.searchParams.get("conversationId");
+    const rawLimit = parseInt(url.searchParams.get("limit") || "50", 10);
+    const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 50, 1), 100);
+    const beforeCursor = url.searchParams.get("before");
 
-    // If conversationId is requested, return messages for that conversation
+    // If conversationId is requested, return paginated messages for that conversation
     if (conversationId) {
       if (!UUID_REGEX.test(conversationId)) {
-        return NextResponse.json({ messages: [] });
+        return NextResponse.json({ messages: [], hasMore: false });
       }
 
-      const { data: messages, error } = await supabaseAdmin
+      // Verify conversation ownership before returning messages
+      const { data: conv } = await supabaseAdmin
+        .from("chat_conversations")
+        .select("id, firebase_uid")
+        .eq("id", conversationId)
+        .maybeSingle();
+
+      if (!conv || conv.firebase_uid !== user.uid) {
+        return NextResponse.json(
+          { error: "Forbidden", message: "Conversation not accessible" },
+          { status: 403 }
+        );
+      }
+
+      // Build paginated query with selected columns only (no select("*"))
+      let query = supabaseAdmin
         .from("chat_messages")
-        .select("*")
+        .select("id, conversation_id, firebase_uid, role, content, metadata, created_at")
         .eq("conversation_id", conversationId)
-        .eq("firebase_uid", user.uid)
-        .order("created_at", { ascending: true });
+        .eq("firebase_uid", user.uid);
+
+      if (beforeCursor && !isNaN(new Date(beforeCursor).getTime())) {
+        query = query.lt("created_at", beforeCursor);
+      }
+
+      // Order by created_at descending to get the latest messages up to limit
+      const { data: messages, error } = await query
+        .order("created_at", { ascending: false })
+        .limit(limit + 1);
 
       if (error) {
         console.warn("[API chat/conversations] Messages fetch error:", error);
-        return NextResponse.json({ messages: [] });
+        return NextResponse.json({ messages: [], hasMore: false });
       }
 
-      return NextResponse.json({ messages: messages || [] });
+      const rawList = messages || [];
+      const hasMore = rawList.length > limit;
+      const sliced = hasMore ? rawList.slice(0, limit) : rawList;
+
+      // Reverse to return messages in chronological order (oldest to newest)
+      const chronologicalMessages = [...sliced].reverse();
+
+      return NextResponse.json({
+        messages: chronologicalMessages,
+        hasMore,
+        nextCursor: hasMore ? sliced[sliced.length - 1]?.created_at : null,
+      });
     }
 
-    // Otherwise, return all conversations for the user
+    // Otherwise, return all conversations for the user with required columns only (no N+1 loop)
     await ensureUserProfile(supabaseAdmin, user);
 
     const { data: conversations, error } = await supabaseAdmin
       .from("chat_conversations")
-      .select("*")
+      .select("id, firebase_uid, title, category, metadata, last_message_at, created_at, updated_at")
       .eq("firebase_uid", user.uid)
       .eq("archived", false)
-      .order("last_message_at", { ascending: false });
+      .order("last_message_at", { ascending: false })
+      .limit(100);
 
     if (error) {
       console.warn("[API chat/conversations] Conversations fetch error:", error);
       return NextResponse.json({ conversations: [] });
     }
 
-    const convList = conversations || [];
-
-    // Automatically heal and rename generic conversations ("New Career Dialogue")
-    // to the question the student actually asked in that dialogue!
-    const genericConvs = convList.filter((c) => isGenericDialogueTitle(c.title));
-    if (genericConvs.length > 0) {
-      try {
-        const genericIds = genericConvs.map((c) => c.id);
-        const { data: userMsgs } = await supabaseAdmin
-          .from("chat_messages")
-          .select("conversation_id, content, created_at")
-          .in("conversation_id", genericIds)
-          .eq("role", "user")
-          .order("created_at", { ascending: true });
-
-        if (userMsgs && userMsgs.length > 0) {
-          const firstPromptByConv: Record<string, string> = {};
-          for (const msg of userMsgs) {
-            if (!firstPromptByConv[msg.conversation_id] && msg.content?.trim()) {
-              firstPromptByConv[msg.conversation_id] = msg.content.trim();
-            }
-          }
-
-          for (const c of convList) {
-            const firstPrompt = firstPromptByConv[c.id];
-            if (firstPrompt && isGenericDialogueTitle(c.title)) {
-              const updatedTitle = formatConversationTitle(firstPrompt);
-              c.title = updatedTitle;
-              // Persist update to Supabase
-              supabaseAdmin
-                .from("chat_conversations")
-                .update({ title: updatedTitle, updated_at: new Date().toISOString() })
-                .eq("id", c.id)
-                .then(
-                  () => {},
-                  (err: any) => console.warn("[API conversations] Auto-update title warning:", err)
-                );
-            }
-          }
-        }
-      } catch (autoRenameErr) {
-        console.warn("[API conversations] Auto-rename resolution note:", autoRenameErr);
-      }
-    }
-
-    return NextResponse.json({ conversations: convList });
+    return NextResponse.json({
+      conversations: conversations || [],
+    });
   } catch (error: any) {
     console.error("[API chat/conversations] GET error:", error);
     return NextResponse.json(
@@ -244,7 +239,7 @@ export async function POST(req: NextRequest) {
     if (error) {
       console.error("[API chat/conversations] Insert error:", error);
       return NextResponse.json(
-        { error: "Failed to create conversation: " + error.message },
+        { error: "Internal Server Error", message: "Failed to create conversation" },
         { status: 500 }
       );
     }
@@ -253,7 +248,7 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     console.error("[API chat/conversations] POST error:", error);
     return NextResponse.json(
-      { error: error?.message || "Failed to create conversation" },
+      { error: "Internal Server Error", message: "Failed to create conversation" },
       { status: 500 }
     );
   }
@@ -274,7 +269,12 @@ export async function PATCH(req: NextRequest) {
     const { conversationId, title } = body;
 
     if (!conversationId || !title || !UUID_REGEX.test(conversationId)) {
-      return NextResponse.json({ error: "Bad Request" }, { status: 400 });
+      return NextResponse.json({ error: "Bad Request", message: "Valid conversationId and title are required" }, { status: 400 });
+    }
+
+    const sanitizedTitle = String(title).trim().slice(0, 100);
+    if (!sanitizedTitle) {
+      return NextResponse.json({ error: "Bad Request", message: "Title cannot be empty" }, { status: 400 });
     }
 
     if (!isSupabaseAdminConfigured()) {
@@ -284,17 +284,19 @@ export async function PATCH(req: NextRequest) {
     const supabaseAdmin = getSupabaseAdminClient();
     const { error } = await supabaseAdmin
       .from("chat_conversations")
-      .update({ title: title.trim(), updated_at: new Date().toISOString() })
+      .update({ title: sanitizedTitle, updated_at: new Date().toISOString() })
       .eq("id", conversationId)
       .eq("firebase_uid", user.uid);
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("[API chat/conversations] PATCH error:", error);
+      return NextResponse.json({ error: "Internal Server Error", message: "Failed to update conversation title" }, { status: 500 });
     }
 
     return NextResponse.json({ success: true });
   } catch (error: any) {
-    return NextResponse.json({ error: error?.message }, { status: 500 });
+    console.error("[API chat/conversations] PATCH error:", error);
+    return NextResponse.json({ error: "Internal Server Error", message: "Failed to update conversation title" }, { status: 500 });
   }
 }
 
