@@ -12,6 +12,7 @@ import {
   StudentCareerContext,
   isGeminiConfigured,
 } from "@/lib/gemini";
+import { checkChatMessageRateLimit } from "@/lib/server-rate-limit";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -138,7 +139,30 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 3. Ensure server configuration
+    // 3. Server-side Rate Limiting: 20 user message submissions per student per 2 minutes
+    const rateLimit = checkChatMessageRateLimit(user.uid);
+    if (!rateLimit.allowed) {
+      console.warn(
+        `[API Gemini] User ${user.uid} exceeded chatbot message rate limit. Cooldown remaining: ${rateLimit.retryAfterSeconds}s.`
+      );
+      return NextResponse.json(
+        {
+          error: "Rate Limit Exceeded",
+          message:
+            "You have reached the chatbot message limit. Please wait a moment before sending another message.",
+          retryAfter: rateLimit.retryAfterSeconds,
+          resetTimeMs: rateLimit.resetTimeMs,
+        },
+        {
+          status: 429,
+          headers: {
+            "Retry-After": String(rateLimit.retryAfterSeconds),
+          },
+        }
+      );
+    }
+
+    // 4. Ensure server configuration
     if (!isGeminiConfigured()) {
       return NextResponse.json(
         {

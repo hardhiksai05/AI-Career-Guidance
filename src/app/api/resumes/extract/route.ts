@@ -7,6 +7,10 @@ import {
 } from "@/lib/supabase-server";
 import { extractCvContent } from "@/lib/services/cv-extractor";
 import { preprocessDocumentToMarkdown } from "@/lib/services/document-to-markdown";
+import {
+  checkCvUploadRateLimit,
+  cvExtractionHashCache,
+} from "@/lib/server-rate-limit";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -88,7 +92,38 @@ export async function POST(req: NextRequest) {
     const extractedStoragePath = `${resume.storage_path}.extracted.json`;
     const markdownStoragePath = `${resume.storage_path}.normalized.md`;
 
-    // 4. Cache check: If not forceReprocess, check if extraction for this hash already exists
+    // 4. Duplicate CV Detection: Check in-memory hash cache first
+    if (!forceReprocess && cvExtractionHashCache.has(contentHash)) {
+      const cached = cvExtractionHashCache.get(contentHash)!;
+      console.log(`[Resume Extract API] In-memory cache hit for SHA-256 hash ${contentHash.slice(0, 10)}. Reusing extraction without Gemini call.`);
+
+      // Sync cached extraction to storage for this resume record
+      const jsonBuffer = Buffer.from(JSON.stringify(cached.extractedData, null, 2), "utf8");
+      await supabaseAdmin.storage
+        .from("student-resumes")
+        .upload(extractedStoragePath, jsonBuffer, {
+          contentType: "application/json",
+          upsert: true,
+        });
+
+      await supabaseAdmin
+        .from("resumes")
+        .update({ upload_status: "extracted", updated_at: new Date().toISOString() })
+        .eq("id", resumeId);
+
+      return NextResponse.json({
+        success: true,
+        cached: true,
+        resumeId: resume.id,
+        originalFilename: resume.original_filename,
+        uploadedAt: resume.created_at,
+        extractedData: cached.extractedData,
+        normalizedMarkdown: cached.normalizedMarkdown,
+        tokenMetrics: cached.tokenMetrics,
+      });
+    }
+
+    // Check storage cache for this specific resume
     if (!forceReprocess && (resume.upload_status === "extracted" || resume.upload_status === "verified")) {
       const { data: cachedBlob } = await supabaseAdmin.storage
         .from("student-resumes")
@@ -107,7 +142,14 @@ export async function POST(req: NextRequest) {
           }
 
           if (cachedJson?._preprocessingMetrics?.contentHash === contentHash) {
-            console.log(`[Resume Extract API] Cache hit for hash ${contentHash.slice(0, 8)}. Skipping Gemini reprocessing.`);
+            console.log(`[Resume Extract API] Storage cache hit for hash ${contentHash.slice(0, 8)}. Skipping Gemini reprocessing.`);
+            cvExtractionHashCache.set(contentHash, {
+              extractedData: cachedJson,
+              normalizedMarkdown,
+              tokenMetrics: cachedJson._preprocessingMetrics,
+              cachedAt: Date.now(),
+            });
+
             return NextResponse.json({
               success: true,
               cached: true,
@@ -125,7 +167,26 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 5. Update status to 'processing'
+    // 5. Server-side Rate Limiting: 3 documents per rolling 20-minute window
+    const rateLimit = checkCvUploadRateLimit(user.uid);
+    if (!rateLimit.allowed) {
+      console.warn(`[Resume Extract API] User ${user.uid} hit CV upload rate limit. Retry in ${rateLimit.retryAfterSeconds}s.`);
+      return NextResponse.json(
+        {
+          error: "Rate Limit Exceeded",
+          message: "You have reached the CV upload limit. You can upload up to 3 CV documents every 20 minutes. Please try again later.",
+          retryAfter: rateLimit.retryAfterSeconds,
+        },
+        {
+          status: 429,
+          headers: {
+            "Retry-After": String(rateLimit.retryAfterSeconds),
+          },
+        }
+      );
+    }
+
+    // 6. Update status to 'processing'
     await supabaseAdmin
       .from("resumes")
       .update({ upload_status: "processing", updated_at: new Date().toISOString() })
@@ -189,6 +250,14 @@ export async function POST(req: NextRequest) {
           updated_at: new Date().toISOString(),
         })
         .eq("id", resumeId);
+
+      // Cache extracted result by SHA-256 content hash
+      cvExtractionHashCache.set(contentHash, {
+        extractedData,
+        normalizedMarkdown: preprocessingResult.markdown,
+        tokenMetrics: extractedData._preprocessingMetrics,
+        cachedAt: Date.now(),
+      });
 
       return NextResponse.json({
         success: true,

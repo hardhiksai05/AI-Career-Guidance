@@ -12,7 +12,7 @@ export interface ProcessedJobDetails {
   usedAi: boolean;
 }
 
-const DEFAULT_GEMINI_JOB_MODEL = "gemini-2.5-flash-lite";
+const DEFAULT_GEMINI_JOB_MODEL = "gemini-3.1-flash-lite";
 
 export function getJobProcessingModelName(): string {
   return process.env.GEMINI_JOB_MODEL?.trim() || DEFAULT_GEMINI_JOB_MODEL;

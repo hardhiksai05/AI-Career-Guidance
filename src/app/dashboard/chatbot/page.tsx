@@ -5,6 +5,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { useToast } from "@/components/ui/Toast";
 import { useAuth } from "@/context/AuthContext";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import {
@@ -227,6 +228,7 @@ function ChatbotThinkingIndicator() {
 }
 
 export default function ChatbotPage() {
+  const { showToast } = useToast();
   const searchParams = useSearchParams();
   const initialParam = searchParams.get("query");
   const { user } = useAuth();
@@ -759,7 +761,44 @@ export default function ChatbotPage() {
           signal: controller.signal,
         });
 
-        // Dual-tier fallback: if SSE streaming request is rejected or fails, attempt standard JSON response
+        // Handle 429 rate limit immediately without retrying
+        if (res.status === 429) {
+          const errJson = await res.json().catch(() => ({}));
+          const cooldownMsg = errJson.retryAfter
+            ? `${errJson.message || "You have reached the chatbot message limit. Please wait a moment before sending another message."} (Cooldown: ${errJson.retryAfter}s remaining)`
+            : errJson.message || "You have reached the chatbot message limit. Please wait a moment before sending another message.";
+
+          setIsTyping(false);
+          setIsStreaming(false);
+          setConversations((prev) =>
+            prev.map((c) => {
+              if (c.id === targetConvId) {
+                return {
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === streamAssistantId
+                      ? {
+                          ...m,
+                          text: `⏳ **Message Limit Reached**\n\n${cooldownMsg}`,
+                          isError: true,
+                        }
+                      : m
+                  ),
+                };
+              }
+              return c;
+            })
+          );
+          showToast({
+            type: "error",
+            title: "Rate Limit Exceeded",
+            description: cooldownMsg,
+            duration: 6000,
+          });
+          return;
+        }
+
+        // Dual-tier fallback: if SSE streaming request is rejected or fails (and not 429), attempt standard JSON response
         if (!res.ok) {
           console.warn("[Chatbot] SSE streaming rejected (status " + res.status + "), falling back to non-streaming JSON...");
           res = await fetch("/api/chat/gemini", {

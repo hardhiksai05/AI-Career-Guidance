@@ -184,7 +184,7 @@ export function calculateJobMatch(
 export function rankAndFilterJobs(
   jobs: (RawJobListing & ProcessedJobDetails & { id?: string })[],
   candidate: CandidateProfileContext,
-  maxResults = 50
+  maxResults = 20
 ): JobMatchResult[] {
   const scored = jobs.map((j) => calculateJobMatch(j, candidate));
 

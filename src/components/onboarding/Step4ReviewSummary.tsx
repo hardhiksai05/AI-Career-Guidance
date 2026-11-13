@@ -61,34 +61,11 @@ export const Step4ReviewSummary: React.FC<Step4Props> = ({
           // ignore localStorage error
         }
       }
-      const createdUser = await signUp(
+      await signUp(
         data.basic.email,
         data.basic.password,
         data.basic.username || data.academic.fullName
       );
-
-      // Associate pending CV and extracted data with the new Firebase user
-      if (
-        createdUser &&
-        (data.academic.tempFileRef || data.academic.extractedCvData)
-      ) {
-        try {
-          const token = await createdUser.getIdToken();
-          await fetch("/api/onboarding/claim-cv", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({
-              tempFileRef: data.academic.tempFileRef,
-              extractedData: data.academic.extractedCvData,
-            }),
-          });
-        } catch (claimErr) {
-          console.warn("[Step4] Onboarding claim-cv note:", claimErr);
-        }
-      }
 
       showToast({
         type: "success",
@@ -190,47 +167,11 @@ export const Step4ReviewSummary: React.FC<Step4Props> = ({
                 {data.academic.currentYear} (Class of {data.academic.graduationYear})
               </p>
             </div>
-          </div>
-        </div>
-
-        {/* CV Upload Status */}
-        <div className="glass-panel rounded-2xl p-5 border border-white/10 space-y-2">
-          <div className="flex items-center justify-between pb-2 border-b border-white/5">
-            <div className="flex items-center gap-2 text-white font-semibold text-sm">
-              <FileText className="w-4 h-4 text-emerald-400" />
-              <span>CV / Resume Document</span>
-            </div>
-            <button
-              type="button"
-              onClick={() => onJumpToStep(2)}
-              className="text-xs text-accent-cyan hover:underline flex items-center gap-1"
-            >
-              <Edit className="w-3 h-3" /> Edit
-            </button>
-          </div>
-          <div className="text-xs">
-            {data.academic.resumeFile ? (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between p-2.5 rounded-xl bg-cyan-950/30 border border-cyan-800/30 text-cyan-200">
-                  <span className="font-medium truncate max-w-[240px]">
-                    {data.academic.resumeFile.name}
-                  </span>
-                  <span className="text-slate-400">
-                    {formatFileSize(data.academic.resumeFile.size)}
-                  </span>
-                </div>
-                {data.academic.extractedCvData && (
-                  <div className="flex items-center gap-2 text-[11px] text-purple-300">
-                    <Sparkles className="w-3.5 h-3.5 text-accent-cyan" />
-                    <span>Academic & professional credentials extracted and staged for account linking.</span>
-                  </div>
-                )}
+            {data.academic.cgpa && (
+              <div>
+                <span className="text-slate-400">CGPA / GPA:</span>
+                <p className="font-semibold text-white mt-0.5">{data.academic.cgpa}</p>
               </div>
-            ) : (
-              <p className="text-slate-400 italic">
-                Manual academic profile chosen (No resume attached). You can upload a CV later in
-                Settings.
-              </p>
             )}
           </div>
         </div>

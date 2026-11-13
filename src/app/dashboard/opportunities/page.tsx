@@ -39,13 +39,11 @@ export default function OpportunitiesPage() {
 
   const [jobs, setJobs] = useState<StudentJobRecommendationView[]>([]);
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Metadata from API
   const [cachedStatus, setCachedStatus] = useState<boolean>(true);
-  const [modelUsed, setModelUsed] = useState<string>("gemini-2.5-flash-lite");
-  const [jobSource, setJobSource] = useState<string>("adzuna_live");
   const [lastUpdated, setLastUpdated] = useState<string>("");
 
   // Filters state
@@ -72,16 +70,16 @@ export default function OpportunitiesPage() {
     }
   }, []);
 
-  // Fetch job recommendations
+  // Fetch job recommendations (uses automatic 25-minute background synchronization)
   const fetchJobs = useCallback(
-    async (forceSync = false) => {
+    async (isManualRefresh = false) => {
       if (!user) {
         setLoading(false);
         return;
       }
 
-      if (forceSync) {
-        setSyncing(true);
+      if (isManualRefresh) {
+        setRefreshing(true);
       } else {
         setLoading(true);
       }
@@ -89,11 +87,8 @@ export default function OpportunitiesPage() {
 
       try {
         const token = await user.getIdToken();
-        const url = forceSync ? "/api/jobs/sync" : "/api/jobs";
-        const method = forceSync ? "POST" : "GET";
-
-        const res = await fetch(url, {
-          method,
+        const res = await fetch("/api/jobs", {
+          method: "GET",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
@@ -107,10 +102,9 @@ export default function OpportunitiesPage() {
 
         const data = await res.json();
         if (Array.isArray(data.jobs)) {
-          setJobs(data.jobs);
+          // Strictly cap at maximum 20 jobs
+          setJobs(data.jobs.slice(0, 20));
           setCachedStatus(Boolean(data.cached));
-          setModelUsed(data.modelUsed || "gemini-2.5-flash-lite");
-          setJobSource(data.source || "adzuna");
           setLastUpdated(data.lastUpdated || new Date().toISOString());
         }
       } catch (err: any) {
@@ -118,7 +112,7 @@ export default function OpportunitiesPage() {
         setError(err?.message || "Failed to load job listings");
       } finally {
         setLoading(false);
-        setSyncing(false);
+        setRefreshing(false);
       }
     },
     [user]
@@ -209,19 +203,19 @@ export default function OpportunitiesPage() {
         if (sortBy === "salary") return (b.salaryMax || 0) - (a.salaryMax || 0);
         return 0;
       })
-      .slice(0, 50);
+      .slice(0, 20);
   }, [jobs, searchQuery, selectedContract, selectedLocation, hasSalaryOnly, sortBy, bookmarkedIds]);
 
   return (
     <div className="space-y-6 pb-12">
-      {/* 1. Header & Live Sync Actions */}
+      {/* 1. Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight mb-1.5">
             CV-Matched Job Opportunities
           </h1>
           <p className="text-sm text-slate-400">
-            Real engineering and tech positions algorithmic-ranked against your CV skills, coursework, and degree.
+            Real engineering and tech positions algorithmically ranked against your CV skills, coursework, and degree.
           </p>
         </div>
 
@@ -230,21 +224,21 @@ export default function OpportunitiesPage() {
             variant="secondary"
             size="sm"
             onClick={() => fetchJobs(true)}
-            disabled={loading || syncing}
+            disabled={loading || refreshing}
             leftIcon={
-              syncing ? (
+              refreshing ? (
                 <Loader2 className="w-4 h-4 animate-spin text-accent-cyan" />
               ) : (
                 <RefreshCw className="w-4 h-4" />
               )
             }
           >
-            {syncing ? "Syncing Adzuna..." : "Sync Latest Jobs"}
+            {refreshing ? "Refreshing..." : "Refresh"}
           </Button>
         </div>
       </div>
 
-      {/* 2. Caching & Performance Status Banner */}
+      {/* 2. Caching & Profile-Matching Status Banner */}
       <div className="p-4 rounded-2xl bg-gradient-to-r from-[#0c122c]/90 via-[#0e1638]/80 to-[#0c122c]/90 border border-white/10 flex flex-col md:flex-row md:items-center justify-between gap-4 text-xs">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-accent-cyan shrink-0">
@@ -253,22 +247,20 @@ export default function OpportunitiesPage() {
           <div>
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-white font-bold">
-                {cachedStatus ? "Cached Opportunities Loaded" : "Live Opportunities Synchronized"}
+                {cachedStatus ? "Verified Matches Ready" : "Fresh Opportunities Synchronized"}
               </span>
               <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 font-mono text-[10px] flex items-center gap-1">
                 <CheckCircle2 className="w-3 h-3" />
-                {cachedStatus ? "Zero AI credits consumed – instant database response" : "Processed with Gemini 2.5 Flash-Lite"}
+                Algorithmically matched to your student profile & skills
               </span>
             </div>
             <div className="text-slate-400 mt-1 flex items-center gap-3 flex-wrap">
-              <span>Model: <strong className="text-slate-300 font-mono">{modelUsed}</strong></span>
-              <span>•</span>
-              <span>Source: <strong className="text-slate-300 capitalize">{jobSource.replace("_", " ")}</strong></span>
+              <span>Automatic Background Updates Enabled</span>
               {lastUpdated && (
                 <>
                   <span>•</span>
                   <span>
-                    Updated: {new Date(lastUpdated).toLocaleDateString("en-US", {
+                    Last checked: {new Date(lastUpdated).toLocaleDateString("en-US", {
                       month: "short",
                       day: "numeric",
                       hour: "2-digit",
@@ -283,7 +275,7 @@ export default function OpportunitiesPage() {
 
         <div className="flex items-center gap-2 shrink-0">
           <span className="text-[11px] font-mono text-accent-cyan bg-white/5 border border-white/10 px-3 py-1.5 rounded-xl">
-            Showing {filteredJobs.length} of {jobs.length} Opportunities (Top 50 Cap)
+            Showing {filteredJobs.length} Curated Opportunities (Max 20)
           </span>
         </div>
       </div>
@@ -402,7 +394,7 @@ export default function OpportunitiesPage() {
           <Briefcase className="w-10 h-10 text-slate-500 mx-auto" />
           <h3 className="text-lg font-bold text-white">No opportunities match your active filters</h3>
           <p className="text-xs text-slate-400 max-w-md mx-auto">
-            Try loosening your search query, resetting location preferences, or syncing the latest Adzuna listings.
+            Try loosening your search query, resetting location preferences, or clearing your active filters.
           </p>
           <Button
             variant="secondary"

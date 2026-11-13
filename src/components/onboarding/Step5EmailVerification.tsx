@@ -125,21 +125,6 @@ export const Step5EmailVerification: React.FC<Step5Props> = ({ email, onboarding
                 });
               }
 
-              if (savedDraft.academic?.tempFileRef) {
-                const token = await user.getIdToken();
-                await fetch("/api/onboarding/claim-cv", {
-                  method: "POST",
-                  headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${token}`,
-                  },
-                  body: JSON.stringify({
-                    tempFileRef: savedDraft.academic.tempFileRef,
-                    extractedData: savedDraft.academic.extractedCvData,
-                  }),
-                }).catch(() => {});
-              }
-
               if (typeof window !== "undefined") {
                 localStorage.removeItem("onboarding_draft");
               }
