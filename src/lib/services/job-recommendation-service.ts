@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { getSupabaseAdminClient, isSupabaseAdminConfigured } from "@/lib/supabase-server";
 import { fetchAdzunaJobs, RawJobListing } from "./adzuna-service";
 import {
@@ -41,6 +42,8 @@ export interface StudentJobRecommendationView {
   qualificationCompatibility: string;
   experienceCompatibility: string;
   matchExplanation: string;
+  profileVersion?: string;
+  inventoryVersion?: number;
   isBookmarked?: boolean;
 }
 
@@ -49,9 +52,33 @@ const SYNC_COOLDOWN_MS = 25 * 60 * 1000; // 25 minutes strict shared cooldown
 const MAX_RECOMMENDED_JOBS = 20; // Hard limit: max 20 jobs
 const MAX_AI_JOBS_PER_SYNC = 8; // Max 8 jobs parsed with Gemini per sync to stay within 15 RPM
 
-// In-memory concurrency guard to prevent simultaneous sync executions across requests
-let isGlobalSyncInProgress = false;
-let globalSyncStartedAt = 0;
+// In-memory concurrency mutex to coordinate requests across threads in the Node.js process
+let isProcessSyncRunning = false;
+let processSyncStartedAt = 0;
+
+/**
+ * Computes a deterministic SHA-256 fingerprint for a student's relevant profile fields.
+ * Any change to degree, branch, university, skills, projects, locations, or experience
+ * alters this fingerprint, immediately triggering recommendation recalculation.
+ * Changes to unrelated fields (profile picture, phone, bio) do NOT alter this fingerprint.
+ */
+export function calculateStudentProfileFingerprint(candidate: CandidateProfileContext): string {
+  const normalized = {
+    degree: (candidate.degree || "").trim().toLowerCase(),
+    branch: (candidate.branch || "").trim().toLowerCase(),
+    university: (candidate.university || "").trim().toLowerCase(),
+    skills: Array.from(new Set((candidate.skills || []).map((s) => s.trim().toLowerCase()))).sort(),
+    projects: (candidate.projects || []).map((p) => p.trim().toLowerCase()).sort(),
+    locations: (candidate.preferredLocations || []).map((l) => l.trim().toLowerCase()).sort(),
+    experience: (candidate.experienceLevel || "").trim().toLowerCase(),
+  };
+
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify(normalized))
+    .digest("hex")
+    .slice(0, 16);
+}
 
 /**
  * Retrieves the student's candidate profile context from Supabase (profile, preferences, resume)
@@ -90,6 +117,7 @@ export async function getCandidateContext(firebaseUid: string): Promise<Candidat
     const prefs = prefsRes?.data;
 
     let cvSkills: string[] = [];
+    let cvProjects: string[] = [];
     if (latestCv) {
       const extractedPath = `${latestCv.storage_path}.extracted.json`;
       const { data: blob } = await supabaseAdmin.storage
@@ -101,6 +129,9 @@ export async function getCandidateContext(firebaseUid: string): Promise<Candidat
           const parsed = JSON.parse(await blob.text());
           if (Array.isArray(parsed?.technicalSkills)) {
             cvSkills = parsed.technicalSkills;
+          }
+          if (Array.isArray(parsed?.projects)) {
+            cvProjects = parsed.projects.map((p: any) => typeof p === "string" ? p : p.name || p.title || "").filter(Boolean);
           }
         } catch {}
       }
@@ -120,7 +151,7 @@ export async function getCandidateContext(firebaseUid: string): Promise<Candidat
       branch: profile?.branch || defaultContext.branch,
       university: profile?.university || defaultContext.university,
       skills: mergedSkills.length > 0 ? mergedSkills : defaultContext.skills,
-      projects: [],
+      projects: cvProjects.length > 0 ? cvProjects : defaultContext.projects,
       preferredLocations: prefs?.preferred_locations?.length
         ? prefs.preferred_locations
         : defaultContext.preferredLocations,
@@ -133,81 +164,143 @@ export async function getCandidateContext(firebaseUid: string): Promise<Candidat
 }
 
 /**
- * Checks if the shared job synchronization cooldown is currently active.
+ * Obtains an atomic synchronization lock across concurrent backend requests.
+ * Tier A: PostgreSQL RPC acquire_job_sync_lock() (atomic FOR UPDATE row lock)
+ * Tier B: Supabase job_sync_logs lease + process-level mutex
  */
-async function isSyncCooldownActive(): Promise<{ active: boolean; lastSyncCompletedAt: string | null }> {
-  // 1. In-memory guard
+async function acquireSharedInventoryLock(): Promise<{
+  acquired: boolean;
+  inventoryVersion: number;
+  lastSyncedAt: string;
+  isExpired: boolean;
+}> {
   const now = Date.now();
-  if (isGlobalSyncInProgress && now - globalSyncStartedAt < 5 * 60 * 1000) {
-    return { active: true, lastSyncCompletedAt: new Date(globalSyncStartedAt).toISOString() };
-  }
+  const supabaseAdmin = isSupabaseAdminConfigured() ? getSupabaseAdminClient() : null;
 
-  // 2. Database log check
-  if (!isSupabaseAdminConfigured()) {
-    return { active: false, lastSyncCompletedAt: null };
-  }
-
-  try {
-    const supabaseAdmin = getSupabaseAdminClient();
-    const { data: latestLog, error } = await supabaseAdmin
-      .from("job_sync_logs")
-      .select("sync_started_at, sync_completed_at, status")
-      .order("sync_started_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (!error && latestLog) {
-      // If a sync was started within the last 4 minutes and is still in progress
-      if (
-        latestLog.status === "in_progress" &&
-        now - new Date(latestLog.sync_started_at).getTime() < 4 * 60 * 1000
-      ) {
-        return { active: true, lastSyncCompletedAt: latestLog.sync_started_at };
-      }
-
-      // If a completed sync finished less than 25 minutes ago
-      if (latestLog.sync_completed_at) {
-        const timeSinceSync = now - new Date(latestLog.sync_completed_at).getTime();
-        if (timeSinceSync < SYNC_COOLDOWN_MS) {
-          return { active: true, lastSyncCompletedAt: latestLog.sync_completed_at };
-        }
-      }
+  if (!supabaseAdmin) {
+    const expired = now - processSyncStartedAt > SYNC_COOLDOWN_MS;
+    if (expired && !isProcessSyncRunning) {
+      isProcessSyncRunning = true;
+      processSyncStartedAt = now;
+      return { acquired: true, inventoryVersion: 1, lastSyncedAt: new Date(processSyncStartedAt).toISOString(), isExpired: true };
     }
-  } catch (err) {
-    console.warn("[JobRecService] Cooldown check warning:", err);
+    return { acquired: false, inventoryVersion: 1, lastSyncedAt: new Date(processSyncStartedAt).toISOString(), isExpired: false };
   }
 
-  return { active: false, lastSyncCompletedAt: null };
+  // 1. Try Tier A: PostgreSQL RPC atomic lock
+  try {
+    const { data: rpcResult, error: rpcErr } = await supabaseAdmin.rpc("acquire_job_sync_lock", {
+      cooldown_seconds: 1500, // 25 minutes
+      lock_timeout_seconds: 180, // 3 minutes timeout
+    });
+
+    if (!rpcErr && rpcResult && typeof rpcResult === "object") {
+      return {
+        acquired: Boolean(rpcResult.acquired),
+        inventoryVersion: Number(rpcResult.inventory_version) || 1,
+        lastSyncedAt: rpcResult.last_synced_at || new Date().toISOString(),
+        isExpired: Boolean(rpcResult.is_expired),
+      };
+    }
+  } catch {
+    // RPC not yet deployed or table not present, proceed to Tier B
+  }
+
+  // 2. Tier B: Atomic log-based lease check
+  try {
+    const { data: latestLogs } = await supabaseAdmin
+      .from("job_sync_logs")
+      .select("id, status, sync_started_at, sync_completed_at, created_at")
+      .order("created_at", { ascending: false })
+      .limit(5);
+
+    const latest = latestLogs?.[0];
+    const latestCompleted = latestLogs?.find((l) => l.status === "completed" && l.sync_completed_at);
+
+    const lastCompletedAt = latestCompleted?.sync_completed_at
+      ? new Date(latestCompleted.sync_completed_at).getTime()
+      : 0;
+
+    const isExpired = now - lastCompletedAt >= SYNC_COOLDOWN_MS;
+
+    // Check if an in_progress sync is currently running within the last 3.5 minutes
+    const isDbSyncRunning = latest?.status === "in_progress" && now - new Date(latest.sync_started_at).getTime() < 3.5 * 60 * 1000;
+    const isLocalRunning = isProcessSyncRunning && now - processSyncStartedAt < 3.5 * 60 * 1000;
+
+    if (!isExpired || isDbSyncRunning || isLocalRunning) {
+      // Cooldown is active or another process holds the sync lease
+      const derivedVersion = latestLogs?.filter((l) => l.status === "completed").length || 1;
+      return {
+        acquired: false,
+        inventoryVersion: Math.max(1, derivedVersion),
+        lastSyncedAt: latestCompleted?.sync_completed_at || new Date().toISOString(),
+        isExpired,
+      };
+    }
+
+    // Acquire lease: mark local mutex and record in-progress log
+    isProcessSyncRunning = true;
+    processSyncStartedAt = now;
+
+    await supabaseAdmin.from("job_sync_logs").insert({
+      provider: "adzuna",
+      sync_started_at: new Date(now).toISOString(),
+      jobs_fetched: 0,
+      status: "in_progress",
+    });
+
+    const derivedVersion = (latestLogs?.filter((l) => l.status === "completed").length || 0) + 1;
+    return {
+      acquired: true,
+      inventoryVersion: derivedVersion,
+      lastSyncedAt: latestCompleted?.sync_completed_at || new Date(now).toISOString(),
+      isExpired: true,
+    };
+  } catch (err) {
+    console.warn("[JobRecService] Lease check warning:", err);
+    return { acquired: false, inventoryVersion: 1, lastSyncedAt: new Date().toISOString(), isExpired: false };
+  }
 }
 
 /**
- * Synchronizes the shared job inventory from Adzuna API, deduplicating and processing
- * with gemini-3.1-flash-lite (capped at MAX_AI_JOBS_PER_SYNC to prevent rate limits).
+ * Releases the atomic synchronization lock.
  */
-async function syncSharedJobInventory(): Promise<{ success: boolean; jobsCount: number; error?: string }> {
-  if (isGlobalSyncInProgress) {
-    return { success: false, jobsCount: 0, error: "Sync already running" };
-  }
+async function releaseSharedInventoryLock(
+  newVersion: number,
+  totalJobs: number,
+  wasSuccess: boolean
+): Promise<void> {
+  isProcessSyncRunning = false;
+  const supabaseAdmin = isSupabaseAdminConfigured() ? getSupabaseAdminClient() : null;
+  if (!supabaseAdmin) return;
 
-  isGlobalSyncInProgress = true;
-  globalSyncStartedAt = Date.now();
+  // 1. Try Tier A: Release RPC
+  try {
+    await supabaseAdmin.rpc("release_job_sync_lock", {
+      new_inventory_version: newVersion,
+      new_total_jobs: totalJobs,
+      was_success: wasSuccess,
+    });
+  } catch {}
+}
+
+/**
+ * Synchronizes the shared job inventory from Adzuna API.
+ * Follows Safe Database Replacement:
+ * 1. Fetches from Adzuna API.
+ * 2. Validates API response.
+ * 3. Normalizes and extracts structured details (capped AI + deterministic heuristics).
+ * 4. Upserts fresh jobs into 'jobs' with is_active = true and new inventory_version.
+ * 5. Soft-deactivates obsolete jobs (is_active = false) to preserve saved bookmarks and FKs.
+ * 6. Never deletes records if Adzuna fails, preserves previous valid inventory.
+ */
+export async function syncSharedJobInventory(
+  targetVersion: number = 1
+): Promise<{ success: boolean; jobsCount: number; version: number; error?: string }> {
   const syncStartedAtIso = new Date().toISOString();
-
   const supabaseAdmin = isSupabaseAdminConfigured() ? getSupabaseAdminClient() : null;
 
   try {
-    // Record in-progress sync log in database
-    if (supabaseAdmin) {
-      try {
-        await supabaseAdmin.from("job_sync_logs").insert({
-          provider: "adzuna",
-          sync_started_at: syncStartedAtIso,
-          jobs_fetched: 0,
-          status: "in_progress",
-        });
-      } catch {}
-    }
-
     // High-yield engineering & tech search queries
     const searchQueries = [
       "Software Engineer Graduate",
@@ -222,11 +315,11 @@ async function syncSharedJobInventory(): Promise<{ success: boolean; jobsCount: 
       40
     );
 
-    if (rawJobs.length === 0) {
+    if (!rawJobs || rawJobs.length === 0) {
       throw new Error(adzunaErr || "No jobs returned from Adzuna API");
     }
 
-    // Deduplicate fetched jobs by normalized key (company + title + url)
+    // Deduplicate fetched jobs by normalized key (provider + providerJobId)
     const seenKeys = new Set<string>();
     const uniqueRawJobs: RawJobListing[] = [];
 
@@ -242,11 +335,13 @@ async function syncSharedJobInventory(): Promise<{ success: boolean; jobsCount: 
     let jobsInserted = 0;
     let jobsUpdated = 0;
     let jobsFailed = 0;
+    const activeProviderJobIds = new Set<string>();
 
     for (const rawJob of uniqueRawJobs) {
       try {
         let details: ProcessedJobDetails | null = null;
         let isExistingInDb = false;
+        activeProviderJobIds.add(rawJob.providerJobId);
 
         // Check if job is already in Supabase with matching content_hash
         if (supabaseAdmin) {
@@ -309,7 +404,10 @@ async function syncSharedJobInventory(): Promise<{ success: boolean; jobsCount: 
               posted_at: rawJob.postedAt,
               content_hash: rawJob.contentHash,
               is_active: true,
-              raw_provider_data: rawJob.rawProviderData || {},
+              raw_provider_data: {
+                ...(rawJob.rawProviderData || {}),
+                inventoryVersion: targetVersion,
+              },
               updated_at: new Date().toISOString(),
             },
             { onConflict: "provider,provider_job_id" }
@@ -332,6 +430,32 @@ async function syncSharedJobInventory(): Promise<{ success: boolean; jobsCount: 
       }
     }
 
+    // Safe Soft-Deactivation: Mark older jobs not in the current batch as inactive
+    // Crucial: We NEVER hard delete jobs to ensure student bookmarks & applied records never break!
+    if (supabaseAdmin && activeProviderJobIds.size > 0) {
+      try {
+        const { data: oldJobs } = await supabaseAdmin
+          .from("jobs")
+          .select("id, provider_job_id, created_at")
+          .eq("is_active", true);
+
+        if (Array.isArray(oldJobs)) {
+          const obsoleteIds = oldJobs
+            .filter((j) => !activeProviderJobIds.has(j.provider_job_id))
+            .map((j) => j.id);
+
+          if (obsoleteIds.length > 0) {
+            await supabaseAdmin
+              .from("jobs")
+              .update({ is_active: false, updated_at: new Date().toISOString() })
+              .in("id", obsoleteIds);
+          }
+        }
+      } catch (deactErr) {
+        console.warn("[JobRecService] Soft-deactivation note:", deactErr);
+      }
+    }
+
     // Log completion in job_sync_logs
     if (supabaseAdmin) {
       try {
@@ -348,7 +472,8 @@ async function syncSharedJobInventory(): Promise<{ success: boolean; jobsCount: 
       } catch {}
     }
 
-    return { success: true, jobsCount: uniqueRawJobs.length };
+    await releaseSharedInventoryLock(targetVersion, uniqueRawJobs.length, true);
+    return { success: true, jobsCount: uniqueRawJobs.length, version: targetVersion };
   } catch (syncErr: any) {
     console.error("[JobRecService] Background synchronization failed:", syncErr);
     if (supabaseAdmin) {
@@ -362,83 +487,27 @@ async function syncSharedJobInventory(): Promise<{ success: boolean; jobsCount: 
         });
       } catch {}
     }
-    return { success: false, jobsCount: 0, error: syncErr?.message };
-  } finally {
-    isGlobalSyncInProgress = false;
+    await releaseSharedInventoryLock(targetVersion, 0, false);
+    return { success: false, jobsCount: 0, version: targetVersion, error: syncErr?.message };
   }
 }
 
 /**
- * Retrieves student job recommendations capped strictly at MAX_RECOMMENDED_JOBS (15–20 jobs).
- * Enforces the 25-minute shared cooldown across all users.
+ * Recalculates personalized job recommendations for a specific student
+ * using the existing shared inventory in Supabase without calling Adzuna.
+ * Called immediately when student changes skills, education, or preferences.
  */
-export async function getStudentJobRecommendations(
-  firebaseUid: string,
-  options?: { forceSync?: boolean }
-): Promise<{
-  recommendations: StudentJobRecommendationView[];
-  totalAvailable: number;
-  cached: boolean;
-  modelUsed: string;
-  source: string;
-  lastUpdated: string;
-}> {
+export async function recalculateStudentJobRecommendations(
+  firebaseUid: string
+): Promise<{ recommendations: StudentJobRecommendationView[]; version: number; profileVersion: string }> {
   const modelName = getJobProcessingModelName();
   const candidate = await getCandidateContext(firebaseUid);
+  const profileFingerprint = calculateStudentProfileFingerprint(candidate);
   const supabaseAdmin = isSupabaseAdminConfigured() ? getSupabaseAdminClient() : null;
 
-  // 1. Check 25-minute shared cooldown
-  const cooldown = await isSyncCooldownActive();
-
-  // If cooldown is active (within 25 mins) and forceSync is not requested, check for cached recommendations
-  if (!options?.forceSync && cooldown.active && supabaseAdmin) {
-    try {
-      const { data: storedRecs, error } = await supabaseAdmin
-        .from("student_job_recommendations")
-        .select(`
-          id,
-          match_score,
-          matched_skills,
-          missing_skills,
-          qualification_compatibility,
-          experience_compatibility,
-          match_explanation,
-          created_at,
-          jobs (*)
-        `)
-        .eq("firebase_uid", firebaseUid)
-        .order("match_score", { ascending: false })
-        .limit(MAX_RECOMMENDED_JOBS);
-
-      if (!error && Array.isArray(storedRecs) && storedRecs.length >= 10) {
-        const mapped = storedRecs
-          .filter((r) => r.jobs && (r.jobs as any).is_active)
-          .map((r) => mapDatabaseRecordToView(r, r.jobs as any))
-          .slice(0, MAX_RECOMMENDED_JOBS);
-
-        if (mapped.length > 0) {
-          return {
-            recommendations: mapped,
-            totalAvailable: mapped.length,
-            cached: true,
-            modelUsed: modelName,
-            source: "supabase_cache",
-            lastUpdated: storedRecs[0].created_at,
-          };
-        }
-      }
-    } catch (dbErr) {
-      console.warn("[JobRecService] Stored recommendations query fallback:", dbErr);
-    }
-  }
-
-  // 2. Cooldown expired (>= 25 minutes) or forceSync requested: refresh job inventory from Adzuna and save to Supabase
-  if (options?.forceSync || !cooldown.active) {
-    await syncSharedJobInventory();
-  }
-
-  // 3. Load active jobs from the shared Supabase inventory and rank deterministically
+  // 1. Fetch active shared inventory from Supabase
   let activeJobs: any[] = [];
+  let currentInventoryVersion = 1;
 
   if (supabaseAdmin) {
     try {
@@ -451,56 +520,23 @@ export async function getStudentJobRecommendations(
 
       if (Array.isArray(dbJobs) && dbJobs.length > 0) {
         activeJobs = dbJobs;
+        currentInventoryVersion = dbJobs[0]?.raw_provider_data?.inventoryVersion || 1;
       }
     } catch (err) {
-      console.warn("[JobRecService] DB jobs fetch fallback:", err);
+      console.warn("[JobRecService] DB jobs fetch note:", err);
     }
   }
 
-  // 3b. Robust Fallback: If DB table is empty or unmigrated, fetch directly from Adzuna / curated feed
+  // Fallback to deterministic jobs if DB is completely unpopulated
   if (activeJobs.length === 0) {
-    try {
-      const searchQueries = [
-        "Software Engineer",
-        "Full Stack Developer",
-        "Data Scientist AI",
-        "Cloud DevOps Engineer",
-      ];
-      const { jobs: fallbackRawJobs } = await fetchAdzunaJobs(searchQueries, ["India"], 30);
-      if (fallbackRawJobs && fallbackRawJobs.length > 0) {
-        activeJobs = fallbackRawJobs.map((raw) => {
-          const details = extractJobDetailsDeterministically(raw);
-          return {
-            id: raw.providerJobId,
-            provider: raw.provider,
-            provider_job_id: raw.providerJobId,
-            title: raw.title,
-            company: raw.company,
-            location: raw.location,
-            description: raw.description,
-            description_summary: details.descriptionSummary,
-            salary_min: raw.salaryMin,
-            salary_max: raw.salaryMax,
-            salary_is_predicted: raw.salaryIsPredicted,
-            contract_type: raw.contractType,
-            experience_level: details.experienceLevel,
-            category: raw.category,
-            required_skills: details.requiredSkills,
-            responsibilities: details.responsibilities,
-            qualifications: details.qualifications,
-            application_url: raw.applicationUrl,
-            posted_at: raw.postedAt,
-            content_hash: raw.contentHash,
-            is_active: true,
-          };
-        });
-      }
-    } catch (fallbackErr) {
-      console.warn("[JobRecService] Fallback job feed notice:", fallbackErr);
+    const fallbackSync = await syncSharedJobInventory(1);
+    if (fallbackSync.success && supabaseAdmin) {
+      const { data: freshJobs } = await supabaseAdmin.from("jobs").select("*").eq("is_active", true).limit(60);
+      if (freshJobs) activeJobs = freshJobs;
     }
   }
 
-  // 4. Map DB jobs into deterministic ranking format
+  // 2. Format jobs for deterministic matching engine
   const formattedForMatching = activeJobs.map((j) => ({
     id: j.id,
     provider: j.provider,
@@ -525,10 +561,10 @@ export async function getStudentJobRecommendations(
     usedAi: false,
   }));
 
-  // Run Deterministic TypeScript Matching Engine capped strictly at MAX_RECOMMENDED_JOBS (20)
+  // 3. Run Deterministic Matching Engine
   const ranked = rankAndFilterJobs(formattedForMatching, candidate, MAX_RECOMMENDED_JOBS);
 
-  // Map to student view
+  // 4. Map to view list
   const finalViewList: StudentJobRecommendationView[] = ranked.slice(0, MAX_RECOMMENDED_JOBS).map((r) => ({
     id: r.job.id || r.job.providerJobId,
     provider: r.job.provider,
@@ -554,11 +590,13 @@ export async function getStudentJobRecommendations(
     missingSkills: r.missingSkills,
     qualificationCompatibility: r.qualificationCompatibility,
     experienceCompatibility: r.experienceCompatibility,
-    matchExplanation: r.matchExplanation,
+    matchExplanation: `${r.matchExplanation} | [v:${currentInventoryVersion}:fp:${profileFingerprint}]`,
+    profileVersion: profileFingerprint,
+    inventoryVersion: currentInventoryVersion,
     isBookmarked: false,
   }));
 
-  // Save to student_job_recommendations in Supabase
+  // 5. Save updated recommendations to Supabase
   if (supabaseAdmin && finalViewList.length > 0) {
     try {
       const recPayloads = ranked
@@ -572,7 +610,7 @@ export async function getStudentJobRecommendations(
           missing_skills: r.missingSkills,
           qualification_compatibility: r.qualificationCompatibility,
           experience_compatibility: r.experienceCompatibility,
-          match_explanation: r.matchExplanation,
+          match_explanation: `${r.matchExplanation} | [v:${currentInventoryVersion}:fp:${profileFingerprint}]`,
           updated_at: new Date().toISOString(),
         }));
 
@@ -581,22 +619,140 @@ export async function getStudentJobRecommendations(
           .from("student_job_recommendations")
           .upsert(recPayloads, { onConflict: "firebase_uid,job_id" });
       }
-    } catch (saveRecErr) {
-      console.warn("[JobRecService] student_job_recommendations upsert note:", saveRecErr);
+    } catch (saveErr) {
+      console.warn("[JobRecService] Recommendations save note:", saveErr);
     }
   }
 
   return {
     recommendations: finalViewList,
-    totalAvailable: finalViewList.length,
-    cached: cooldown.active,
-    modelUsed: modelName,
-    source: cooldown.active ? "supabase_cache" : "adzuna_shared_sync",
-    lastUpdated: cooldown.lastSyncCompletedAt || new Date().toISOString(),
+    version: currentInventoryVersion,
+    profileVersion: profileFingerprint,
   };
 }
 
-function mapDatabaseRecordToView(r: any, j: any): StudentJobRecommendationView {
+/**
+ * Retrieves student job recommendations capped strictly at MAX_RECOMMENDED_JOBS (20 jobs).
+ * Follows the Page-Visit Trigger & 25-minute shared inventory lifecycle:
+ * 1. Checks 25-minute shared inventory expiration.
+ * 2. If expired, acquires atomic lock and performs Adzuna refresh.
+ * 3. Retrieves student profile and computes current profile fingerprint.
+ * 4. Compares profile fingerprint & inventory version with stored recommendations.
+ * 5. Reuses valid recommendations if both versions match (0 recalculation).
+ * 6. Recalculates immediately if either version differs.
+ */
+export async function getStudentJobRecommendations(
+  firebaseUid: string,
+  options?: { forceSync?: boolean }
+): Promise<{
+  recommendations: StudentJobRecommendationView[];
+  totalAvailable: number;
+  cached: boolean;
+  modelUsed: string;
+  source: string;
+  lastUpdated: string;
+  inventoryVersion: number;
+  profileVersion: string;
+}> {
+  const modelName = getJobProcessingModelName();
+  const candidate = await getCandidateContext(firebaseUid);
+  const currentProfileFingerprint = calculateStudentProfileFingerprint(candidate);
+  const supabaseAdmin = isSupabaseAdminConfigured() ? getSupabaseAdminClient() : null;
+
+  // 1. Check shared inventory lock & expiration state
+  const lockState = await acquireSharedInventoryLock();
+  let currentInventoryVersion = lockState.inventoryVersion;
+
+  if (options?.forceSync || (lockState.isExpired && lockState.acquired)) {
+    console.log(`[JobRecService] Cache expired or forceSync requested. Executing Adzuna refresh...`);
+    const nextVersion = lockState.inventoryVersion + 1;
+    const syncRes = await syncSharedJobInventory(nextVersion);
+    if (syncRes.success) {
+      currentInventoryVersion = nextVersion;
+    }
+  } else if (lockState.isExpired && !lockState.acquired) {
+    console.log(`[JobRecService] Cache expired but sync is already in progress by another request. Serving existing inventory.`);
+  }
+
+  // 2. Recommendation Verification: Check if student already has valid recommendations for current versions
+  if (supabaseAdmin && !options?.forceSync) {
+    try {
+      const { data: storedRecs, error } = await supabaseAdmin
+        .from("student_job_recommendations")
+        .select(`
+          id,
+          match_score,
+          matched_skills,
+          missing_skills,
+          qualification_compatibility,
+          experience_compatibility,
+          match_explanation,
+          created_at,
+          updated_at,
+          jobs (*)
+        `)
+        .eq("firebase_uid", firebaseUid)
+        .order("match_score", { ascending: false })
+        .limit(MAX_RECOMMENDED_JOBS);
+
+      if (!error && Array.isArray(storedRecs) && storedRecs.length >= 10) {
+        // Inspect version tags embedded in match_explanation or stored columns
+        const sampleExplanation = storedRecs[0]?.match_explanation || "";
+        const versionMatch = sampleExplanation.match(/\[v:(\d+):fp:([a-f0-9]+)\]/);
+
+        const storedInventoryVersion = versionMatch ? parseInt(versionMatch[1], 10) : null;
+        const storedProfileFingerprint = versionMatch ? versionMatch[2] : null;
+
+        // Check whether both inventory version and profile fingerprint are identical to current values
+        const isInventoryCurrent = storedInventoryVersion === null || storedInventoryVersion === currentInventoryVersion;
+        const isProfileCurrent = storedProfileFingerprint === null || storedProfileFingerprint === currentProfileFingerprint;
+
+        if (isInventoryCurrent && isProfileCurrent) {
+          const mapped = storedRecs
+            .filter((r) => r.jobs && (r.jobs as any).is_active)
+            .map((r) => mapDatabaseRecordToView(r, r.jobs as any, currentProfileFingerprint, currentInventoryVersion))
+            .slice(0, MAX_RECOMMENDED_JOBS);
+
+          if (mapped.length > 0) {
+            return {
+              recommendations: mapped,
+              totalAvailable: mapped.length,
+              cached: true,
+              modelUsed: modelName,
+              source: "supabase_cache_hit",
+              lastUpdated: storedRecs[0].updated_at || storedRecs[0].created_at,
+              inventoryVersion: currentInventoryVersion,
+              profileVersion: currentProfileFingerprint,
+            };
+          }
+        }
+      }
+    } catch (dbErr) {
+      console.warn("[JobRecService] Stored recommendations query fallback:", dbErr);
+    }
+  }
+
+  // 3. Version mismatch or fresh sync: Recalculate personalized recommendations
+  const recalcResult = await recalculateStudentJobRecommendations(firebaseUid);
+
+  return {
+    recommendations: recalcResult.recommendations,
+    totalAvailable: recalcResult.recommendations.length,
+    cached: false,
+    modelUsed: modelName,
+    source: "personalized_recalculated",
+    lastUpdated: lockState.lastSyncedAt || new Date().toISOString(),
+    inventoryVersion: recalcResult.version,
+    profileVersion: recalcResult.profileVersion,
+  };
+}
+
+function mapDatabaseRecordToView(
+  r: any,
+  j: any,
+  profileVersion: string,
+  inventoryVersion: number
+): StudentJobRecommendationView {
   return {
     id: j.id,
     recommendationId: r.id,
@@ -622,8 +778,10 @@ function mapDatabaseRecordToView(r: any, j: any): StudentJobRecommendationView {
     matchedSkills: Array.isArray(r.matched_skills) ? r.matched_skills : [],
     missingSkills: Array.isArray(r.missing_skills) ? r.missing_skills : [],
     qualificationCompatibility: r.qualification_compatibility || "Direct Academic Major Alignment",
-    experienceCompatibility: r.experience_compatibility || "Early Career Growth Opportunity",
-    matchExplanation: r.match_explanation || "",
+    experienceCompatibility: r.experience_compatibility || "Strong Qualification Fit",
+    matchExplanation: r.match_explanation?.replace(/\s*\|?\s*\[v:\d+:fp:[a-f0-9]+\]/, "") || "High-compatibility match based on verified skills and coursework.",
+    profileVersion,
+    inventoryVersion,
     isBookmarked: false,
   };
 }

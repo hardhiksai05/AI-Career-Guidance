@@ -9,6 +9,7 @@ import {
   findSnapshotByCvHash,
   reactivateSnapshot,
 } from "@/lib/services/recommendation-snapshot-service";
+import { recalculateStudentJobRecommendations } from "@/lib/services/job-recommendation-service";
 
 export const dynamic = "force-dynamic";
 
@@ -150,6 +151,14 @@ export async function POST(req: NextRequest) {
       });
     } catch (achErr) {
       console.warn("[Resume Confirm API] Achievement unlock note:", achErr);
+    }
+
+    // 6. Immediately recalculate personalized job recommendations based on new verified profile & skills
+    try {
+      await recalculateStudentJobRecommendations(user.uid);
+      console.log(`[Resume Confirm API] Personalized job recommendations recalculated for user ${user.uid}`);
+    } catch (jobRecErr) {
+      console.warn("[Resume Confirm API] Job recommendation recalculation note:", jobRecErr);
     }
 
     return NextResponse.json({

@@ -176,6 +176,18 @@ export default function ProfilePage() {
           phone: profile.phone.trim() || null,
           bio: profile.bio.trim() || null,
         });
+
+        // Trigger immediate personalized job recommendation recalculation in background
+        user.getIdToken().then((token) => {
+          fetch("/api/jobs", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ action: "recalculate" }),
+          }).catch(() => {});
+        }).catch(() => {});
       }
 
       setIsEditing(false);
