@@ -165,7 +165,7 @@ export async function GET(req: NextRequest) {
 
     const { data: conversations, error } = await supabaseAdmin
       .from("chat_conversations")
-      .select("id, firebase_uid, title, category, metadata, last_message_at, created_at, updated_at")
+      .select("id, firebase_uid, title, archived, last_message_at, created_at, updated_at")
       .eq("firebase_uid", user.uid)
       .eq("archived", false)
       .order("last_message_at", { ascending: false })

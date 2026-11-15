@@ -241,10 +241,12 @@ async function syncSharedJobInventory(): Promise<{ success: boolean; jobsCount: 
     let aiProcessedCount = 0;
     let jobsInserted = 0;
     let jobsUpdated = 0;
+    let jobsFailed = 0;
 
     for (const rawJob of uniqueRawJobs) {
       try {
         let details: ProcessedJobDetails | null = null;
+        let isExistingInDb = false;
 
         // Check if job is already in Supabase with matching content_hash
         if (supabaseAdmin) {
@@ -255,17 +257,20 @@ async function syncSharedJobInventory(): Promise<{ success: boolean; jobsCount: 
             .eq("provider_job_id", rawJob.providerJobId)
             .maybeSingle();
 
-          if (existing && existing.content_hash === rawJob.contentHash && existing.required_skills?.length > 0) {
-            // CACHE HIT: 0 AI calls
-            details = {
-              requiredSkills: existing.required_skills || [],
-              qualifications: existing.qualifications || [],
-              experienceLevel: existing.experience_level || null,
-              descriptionSummary: existing.description_summary || rawJob.description.slice(0, 200),
-              responsibilities: existing.responsibilities || [],
-              category: existing.category || rawJob.category,
-              usedAi: false,
-            };
+          if (existing) {
+            isExistingInDb = true;
+            if (existing.content_hash === rawJob.contentHash && existing.required_skills?.length > 0) {
+              // CACHE HIT: 0 AI calls
+              details = {
+                requiredSkills: existing.required_skills || [],
+                qualifications: existing.qualifications || [],
+                experienceLevel: existing.experience_level || null,
+                descriptionSummary: existing.description_summary || rawJob.description.slice(0, 200),
+                responsibilities: existing.responsibilities || [],
+                category: existing.category || rawJob.category,
+                usedAi: false,
+              };
+            }
           }
         }
 
@@ -304,20 +309,26 @@ async function syncSharedJobInventory(): Promise<{ success: boolean; jobsCount: 
               posted_at: rawJob.postedAt,
               content_hash: rawJob.contentHash,
               is_active: true,
-              raw_metadata: rawJob.rawProviderData || {},
+              raw_provider_data: rawJob.rawProviderData || {},
               updated_at: new Date().toISOString(),
             },
             { onConflict: "provider,provider_job_id" }
           );
 
           if (!upsertErr) {
-            jobsInserted++;
+            if (isExistingInDb) {
+              jobsUpdated++;
+            } else {
+              jobsInserted++;
+            }
           } else {
-            jobsUpdated++;
+            console.error(`[JobRecService] Failed to upsert job ${rawJob.providerJobId}:`, upsertErr);
+            jobsFailed++;
           }
         }
       } catch (jobErr) {
         console.warn(`[JobRecService] Job processing note for ${rawJob.providerJobId}:`, jobErr);
+        jobsFailed++;
       }
     }
 
@@ -331,6 +342,7 @@ async function syncSharedJobInventory(): Promise<{ success: boolean; jobsCount: 
           jobs_fetched: uniqueRawJobs.length,
           jobs_inserted: jobsInserted,
           jobs_updated: jobsUpdated,
+          jobs_failed: jobsFailed,
           status: "completed",
         });
       } catch {}
@@ -375,8 +387,11 @@ export async function getStudentJobRecommendations(
   const candidate = await getCandidateContext(firebaseUid);
   const supabaseAdmin = isSupabaseAdminConfigured() ? getSupabaseAdminClient() : null;
 
-  // 1. Check if student already has saved recommendations in Supabase
-  if (supabaseAdmin) {
+  // 1. Check 25-minute shared cooldown
+  const cooldown = await isSyncCooldownActive();
+
+  // If cooldown is active (within 25 mins) and forceSync is not requested, check for cached recommendations
+  if (!options?.forceSync && cooldown.active && supabaseAdmin) {
     try {
       const { data: storedRecs, error } = await supabaseAdmin
         .from("student_job_recommendations")
@@ -417,10 +432,7 @@ export async function getStudentJobRecommendations(
     }
   }
 
-  // 2. Check 25-minute shared cooldown
-  const cooldown = await isSyncCooldownActive();
-
-  // If forceSync is requested or cooldown is NOT active, run a single shared sync
+  // 2. Cooldown expired (>= 25 minutes) or forceSync requested: refresh job inventory from Adzuna and save to Supabase
   if (options?.forceSync || !cooldown.active) {
     await syncSharedJobInventory();
   }
@@ -550,7 +562,7 @@ export async function getStudentJobRecommendations(
   if (supabaseAdmin && finalViewList.length > 0) {
     try {
       const recPayloads = ranked
-        .filter((r) => r.job.id)
+        .filter((r) => r.job.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(r.job.id))
         .slice(0, MAX_RECOMMENDED_JOBS)
         .map((r) => ({
           firebase_uid: firebaseUid,
@@ -569,7 +581,9 @@ export async function getStudentJobRecommendations(
           .from("student_job_recommendations")
           .upsert(recPayloads, { onConflict: "firebase_uid,job_id" });
       }
-    } catch {}
+    } catch (saveRecErr) {
+      console.warn("[JobRecService] student_job_recommendations upsert note:", saveRecErr);
+    }
   }
 
   return {

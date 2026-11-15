@@ -19,7 +19,6 @@ import {
   Bookmark,
   BookmarkCheck,
   Search,
-  RefreshCw,
   Loader2,
   Sparkles,
   ShieldCheck,
@@ -39,7 +38,6 @@ export default function OpportunitiesPage() {
 
   const [jobs, setJobs] = useState<StudentJobRecommendationView[]>([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Metadata from API
@@ -71,55 +69,47 @@ export default function OpportunitiesPage() {
   }, []);
 
   // Fetch job recommendations (uses automatic 25-minute background synchronization)
-  const fetchJobs = useCallback(
-    async (isManualRefresh = false) => {
-      if (!user) {
-        setLoading(false);
-        return;
+  const fetchJobs = useCallback(async () => {
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const token = await user.getIdToken();
+      const res = await fetch("/api/jobs", {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.message || "Failed to load opportunities");
       }
 
-      if (isManualRefresh) {
-        setRefreshing(true);
-      } else {
-        setLoading(true);
+      const data = await res.json();
+      if (Array.isArray(data.jobs)) {
+        // Strictly cap at maximum 20 jobs
+        setJobs(data.jobs.slice(0, 20));
+        setCachedStatus(Boolean(data.cached));
+        setLastUpdated(data.lastUpdated || new Date().toISOString());
       }
-      setError(null);
-
-      try {
-        const token = await user.getIdToken();
-        const res = await fetch("/api/jobs", {
-          method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-        });
-
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.message || "Failed to load opportunities");
-        }
-
-        const data = await res.json();
-        if (Array.isArray(data.jobs)) {
-          // Strictly cap at maximum 20 jobs
-          setJobs(data.jobs.slice(0, 20));
-          setCachedStatus(Boolean(data.cached));
-          setLastUpdated(data.lastUpdated || new Date().toISOString());
-        }
-      } catch (err: any) {
-        console.error("[OpportunitiesPage] Fetch error:", err);
-        setError(err?.message || "Failed to load job listings");
-      } finally {
-        setLoading(false);
-        setRefreshing(false);
-      }
-    },
-    [user]
-  );
+    } catch (err: any) {
+      console.error("[OpportunitiesPage] Fetch error:", err);
+      setError(err?.message || "Failed to load job listings");
+    } finally {
+      setLoading(false);
+    }
+  }, [user]);
 
   useEffect(() => {
-    fetchJobs(false);
+    fetchJobs();
   }, [fetchJobs]);
 
   // Toggle Bookmark
@@ -217,24 +207,6 @@ export default function OpportunitiesPage() {
           <p className="text-sm text-slate-400">
             Real engineering and tech positions algorithmically ranked against your CV skills, coursework, and degree.
           </p>
-        </div>
-
-        <div className="flex items-center gap-2.5">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => fetchJobs(true)}
-            disabled={loading || refreshing}
-            leftIcon={
-              refreshing ? (
-                <Loader2 className="w-4 h-4 animate-spin text-accent-cyan" />
-              ) : (
-                <RefreshCw className="w-4 h-4" />
-              )
-            }
-          >
-            {refreshing ? "Refreshing..." : "Refresh"}
-          </Button>
         </div>
       </div>
 
